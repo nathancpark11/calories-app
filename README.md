@@ -1,36 +1,91 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Calories App
 
-## Getting Started
+Simple, modern one-page calorie tracker built with Next.js App Router and Tailwind CSS.
 
-First, run the development server:
+## Features
+
+- Daily calorie allowance (set and edit)
+- Today status summary (allowed, consumed, remaining)
+- Progress bar with green/amber/red state logic
+- Manual calorie entry (food + calories)
+- AI calorie estimate via backend-only OpenAI call
+- AI review step with accept/cancel before saving
+- Daily log with source badge (manual/AI) and delete action
+
+## Tech Stack
+
+- Next.js (App Router, TypeScript)
+- Tailwind CSS v4
+- Neon Postgres (`@neondatabase/serverless`)
+- OpenAI Node SDK
+
+## Environment Variables
+
+Create `.env.local` with:
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+DATABASE_URL=postgres://...
+OPENAI_API_KEY=sk-...
+# Optional override
+OPENAI_MODEL=gpt-4.1-mini
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Notes:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+- OpenAI keys are used only in backend route handlers.
+- If `DATABASE_URL` is missing, routes fall back to an in-memory mock store.
+- If `OPENAI_API_KEY` is missing, AI routes fall back to a backend-only mock estimator so the UI flow still works.
+- A stable user identity cookie (`calories_user_id`) is auto-created for per-user tracking.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Auth:
 
-## Learn More
+- The app currently uses a simple email/password login flow before showing the tracker.
+- In mock mode, register once locally and your cookie-backed profile and calorie data will work without Neon.
 
-To learn more about Next.js, take a look at the following resources:
+## Run Locally
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+```bash
+npm install
+npm run dev
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Open [http://localhost:3000](http://localhost:3000).
 
-## Deploy on Vercel
+## API Routes
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+- `GET /api/calories/today`
+- `POST /api/calories/settings`
+- `POST /api/calories/manual-add`
+- `POST /api/calories/ai-estimate`
+- `POST /api/calories/confirm-ai-entry`
+- `DELETE /api/calories/entry/:id`
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+AI route limits:
+
+- `POST /api/calories/ai-estimate` is limited to 10 requests per user per 5-minute window.
+
+## Data Model
+
+SQL schema is provided in `src/lib/calories/schema.sql` and auto-created by repository bootstrap logic.
+
+Tables:
+
+- `user_calorie_settings`
+	- `id`
+	- `user_id`
+	- `daily_calorie_goal`
+	- `created_at`
+	- `updated_at`
+- `calorie_entries`
+	- `id`
+	- `user_id`
+	- `food_name`
+	- `calories`
+	- `source` (`manual` or `ai`)
+	- `entry_date`
+	- `created_at`
+
+## Auth and Timezone
+
+- Requests are scoped by a server-set HTTP-only cookie identity.
+- The client sends `x-time-zone` on API calls so "today" uses the user's local day.

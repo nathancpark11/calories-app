@@ -1,8 +1,10 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #fffefe;
+  --foreground: #111827;
+  --pink-soft: #f4e2e9;
+  --aqua-soft: #e1f5f3;
 }
 
 @theme inline {
@@ -12,15 +14,66 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+body {
+  background-color: var(--background);
+  background-image:
+    radial-gradient(
+      132% 122% at 10% 12%,
+      color-mix(in srgb, var(--pink-soft) 52%, white 48%) 0%,
+      rgba(244, 226, 233, 0.3) 34%,
+      rgba(244, 226, 233, 0.1) 52%,
+      rgba(244, 226, 233, 0) 74%
+    ),
+    radial-gradient(
+      130% 110% at 88% 84%,
+      color-mix(in srgb, var(--aqua-soft) 56%, white 44%) 0%,
+      rgba(225, 245, 243, 0.24) 36%,
+      rgba(225, 245, 243, 0) 70%
+    ),
+    linear-gradient(138deg, #fcf1f6 0%, #fbf6fa 42%, #f6fbfd 68%, #eefaf8 100%);
+  color: var(--foreground);
+  font-family: var(--font-geist-sans), "Segoe UI", sans-serif;
+  min-height: 100vh;
+  position: relative;
+  isolation: isolate;
+  overflow-x: hidden;
+  text-rendering: optimizeLegibility;
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+body::before,
+body::after {
+  content: "";
+  position: fixed;
+  inset: -20vmax;
+  pointer-events: none;
+  z-index: -1;
+}
+
+body::before {
+  background:
+    radial-gradient(46vmax 38vmax at 22% 30%, rgba(244, 226, 233, 0.14), transparent 78%),
+    radial-gradient(48vmax 40vmax at 76% 68%, rgba(225, 245, 243, 0.13), transparent 80%),
+    radial-gradient(58vmax 48vmax at 52% 54%, rgba(255, 255, 255, 0.38), transparent 72%);
+  filter: blur(46px) saturate(100%);
+  opacity: 0.64;
+  transform: translateZ(0);
+}
+
+body::after {
+  inset: 0;
+  background-image:
+    radial-gradient(circle at 18% 24%, rgba(255, 255, 255, 0.12) 0 1px, transparent 1px),
+    radial-gradient(circle at 74% 62%, rgba(17, 24, 39, 0.04) 0 1px, transparent 1px),
+    radial-gradient(circle at 56% 86%, rgba(255, 255, 255, 0.08) 0 1px, transparent 1px);
+  background-size: 3px 3px, 4px 4px, 5px 5px;
+  mix-blend-mode: soft-light;
+  opacity: 0.1;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+::selection {
+  background: rgba(14, 165, 233, 0.18);
 }
