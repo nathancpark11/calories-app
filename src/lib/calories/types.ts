@@ -1,4 +1,5 @@
 export type EntrySource = "manual" | "ai";
+export type MealCategory = "breakfast" | "lunch" | "dinner" | "snack";
 
 export type CalorieEntry = {
   id: string;
@@ -6,6 +7,7 @@ export type CalorieEntry = {
   foodName: string;
   calories: number;
   source: EntrySource;
+  category: MealCategory | null;
   entryDate: string;
   createdAt: string;
 };

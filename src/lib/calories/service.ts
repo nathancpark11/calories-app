@@ -4,6 +4,7 @@ import type {
   CalorieEntry,
   CalendarDayPayload,
   CalendarMonthPayload,
+  MealCategory,
   Recipe,
   RecipeCreateInput,
   TodayPayload,
@@ -44,14 +45,15 @@ export async function addManualEntry(
   foodName: string,
   calories: number,
   timeZone?: string,
+  category?: MealCategory,
 ): Promise<CalorieEntry> {
   const entryDate = timeZone ? dateKeyForTimeZone(sanitizeTimeZone(timeZone)) : undefined;
-  return repository.createEntry({ userId, foodName, calories, source: "manual", entryDate });
+  return repository.createEntry({ userId, foodName, calories, source: "manual", entryDate, category });
 }
 
-export async function confirmAIEntries(userId: string, items: AIEstimateItem[], timeZone?: string) {
+export async function confirmAIEntries(userId: string, items: AIEstimateItem[], timeZone?: string, category?: MealCategory) {
   const entryDate = timeZone ? dateKeyForTimeZone(sanitizeTimeZone(timeZone)) : undefined;
-  return repository.createEntriesFromAI(userId, items, entryDate);
+  return repository.createEntriesFromAI(userId, items, entryDate, category);
 }
 
 export async function removeEntry(userId: string, entryId: string) {

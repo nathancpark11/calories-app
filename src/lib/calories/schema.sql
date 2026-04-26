@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS calorie_entries (
   calories INTEGER NOT NULL,
   source TEXT NOT NULL CHECK (source IN ('manual', 'ai')),
   entry_date DATE NOT NULL,
+  category TEXT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 

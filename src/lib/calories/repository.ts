@@ -7,6 +7,7 @@ import type {
   CalendarMonthDay,
   DailySettings,
   EntrySource,
+  MealCategory,
   Recipe,
   RecipeCreateInput,
 } from "@/lib/calories/types";
@@ -18,6 +19,7 @@ type CreateEntryInput = {
   calories: number;
   source: EntrySource;
   entryDate?: string;
+  category?: MealCategory;
 };
 
 type RecipeAddToTodayInput = {
@@ -33,7 +35,7 @@ type CalorieRepository = {
   getEntriesByDate: (userId: string, entryDate: string) => Promise<CalorieEntry[]>;
   getEntriesByDateRange: (userId: string, startDate: string, endDate: string) => Promise<CalorieEntry[]>;
   createEntry: (input: CreateEntryInput) => Promise<CalorieEntry>;
-  createEntriesFromAI: (userId: string, items: AIEstimateItem[], entryDate?: string) => Promise<CalorieEntry[]>;
+  createEntriesFromAI: (userId: string, items: AIEstimateItem[], entryDate?: string, category?: MealCategory) => Promise<CalorieEntry[]>;
   deleteEntry: (userId: string, id: string) => Promise<boolean>;
   getRecipes: (userId: string, search?: string) => Promise<Recipe[]>;
   createRecipe: (userId: string, input: RecipeCreateInput) => Promise<Recipe>;
@@ -66,6 +68,7 @@ function toCalorieEntry(row: Record<string, unknown>): CalorieEntry {
     foodName: String(row.food_name),
     calories: Number(row.calories),
     source: row.source === "ai" ? "ai" : "manual",
+    category: row.category && typeof row.category === "string" ? (row.category as MealCategory) : null,
     entryDate: String(row.entry_date),
     createdAt: new Date(String(row.created_at)).toISOString(),
   };
@@ -150,6 +153,7 @@ const mockRepository: CalorieRepository = {
       foodName: input.foodName,
       calories: input.calories,
       source: input.source,
+      category: input.category ?? null,
       entryDate: input.entryDate ?? todayDateKey(),
       createdAt: new Date().toISOString(),
     };
@@ -158,7 +162,7 @@ const mockRepository: CalorieRepository = {
     return created;
   },
 
-  async createEntriesFromAI(userId, items, entryDate = todayDateKey()) {
+  async createEntriesFromAI(userId, items, entryDate = todayDateKey(), category?: MealCategory) {
     const created: CalorieEntry[] = [];
     for (const item of items) {
       const entry = await this.createEntry({
@@ -167,6 +171,7 @@ const mockRepository: CalorieRepository = {
         calories: item.calories,
         source: "ai",
         entryDate,
+        category,
       });
       created.push(entry);
     }
@@ -313,6 +318,19 @@ function isConnectionError(error: unknown): boolean {
   );
 }
 
+function isMissingCategoryColumnError(error: unknown): boolean {
+  const dbError = error as DbLikeError;
+  const message = (dbError.message ?? "").toLowerCase();
+  const causeMessage = (dbError.cause?.message ?? "").toLowerCase();
+
+  return (
+    message.includes("column \"category\" does not exist") ||
+    message.includes("column category does not exist") ||
+    causeMessage.includes("column \"category\" does not exist") ||
+    causeMessage.includes("column category does not exist")
+  );
+}
+
 async function withConnectionFallback<T>(operation: () => Promise<T>, fallback: () => Promise<T>): Promise<T> {
   try {
     return await operation();
@@ -320,6 +338,12 @@ async function withConnectionFallback<T>(operation: () => Promise<T>, fallback: 
     if (isConnectionError(error)) {
       resetCalorieSchemaCache();
       return fallback();
+    }
+
+    if (isMissingCategoryColumnError(error)) {
+      resetCalorieSchemaCache();
+      await ensureNeonTables();
+      return operation();
     }
 
     throw error;
@@ -372,6 +396,7 @@ async function ensureNeonTables() {
       `;
 
       await sql`CREATE INDEX IF NOT EXISTS idx_calorie_entries_user_date ON calorie_entries (user_id, entry_date)`;
+      await sql`ALTER TABLE calorie_entries ADD COLUMN IF NOT EXISTS category TEXT NULL`;
       await sql`CREATE INDEX IF NOT EXISTS idx_recipes_user_updated ON recipes (user_id, updated_at DESC)`;
     })();
   }
@@ -404,7 +429,7 @@ const neonRepository: CalorieRepository = {
     return withConnectionFallback(async () => {
       await ensureNeonTables();
       const rows = await sql`
-        SELECT id, user_id, food_name, calories, source, entry_date, created_at
+        SELECT id, user_id, food_name, calories, source, entry_date, category, created_at
         FROM calorie_entries
         WHERE user_id = ${userId} AND entry_date = ${entryDate}
         ORDER BY created_at DESC
@@ -423,7 +448,7 @@ const neonRepository: CalorieRepository = {
     return withConnectionFallback(async () => {
       await ensureNeonTables();
       const rows = await sql`
-        SELECT id, user_id, food_name, calories, source, entry_date, created_at
+        SELECT id, user_id, food_name, calories, source, entry_date, category, created_at
         FROM calorie_entries
         WHERE user_id = ${userId} AND entry_date >= ${startDate} AND entry_date <= ${endDate}
         ORDER BY created_at DESC
@@ -443,17 +468,18 @@ const neonRepository: CalorieRepository = {
       await ensureNeonTables();
       const id = randomUUID();
       const entryDate = input.entryDate ?? todayDateKey();
+      const category = input.category ?? null;
       const rows = await sql`
-        INSERT INTO calorie_entries (id, user_id, food_name, calories, source, entry_date)
-        VALUES (${id}, ${input.userId}, ${input.foodName}, ${input.calories}, ${input.source}, ${entryDate})
-        RETURNING id, user_id, food_name, calories, source, entry_date, created_at
+        INSERT INTO calorie_entries (id, user_id, food_name, calories, source, entry_date, category)
+        VALUES (${id}, ${input.userId}, ${input.foodName}, ${input.calories}, ${input.source}, ${entryDate}, ${category})
+        RETURNING id, user_id, food_name, calories, source, entry_date, category, created_at
       `;
 
       return toCalorieEntry(rows[0] as Record<string, unknown>);
     }, () => mockRepository.createEntry(input));
   },
 
-  async createEntriesFromAI(userId, items, entryDate = todayDateKey()) {
+  async createEntriesFromAI(userId, items, entryDate = todayDateKey(), category?: MealCategory) {
     return withConnectionFallback(async () => {
       const created: CalorieEntry[] = [];
 
@@ -464,12 +490,13 @@ const neonRepository: CalorieRepository = {
           calories: item.calories,
           source: "ai",
           entryDate,
+          category,
         });
         created.push(entry);
       }
 
       return created;
-    }, () => mockRepository.createEntriesFromAI(userId, items, entryDate));
+    }, () => mockRepository.createEntriesFromAI(userId, items, entryDate, category));
   },
 
   async deleteEntry(userId, id) {

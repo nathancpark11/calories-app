@@ -178,9 +178,20 @@ function parseGoalEstimateContent(content: string): GoalEstimateResult {
   };
 }
 
-function parseEstimateContent(content: string): AIEstimateItem[] {
+function buildMockMealLabel(prompt: string): string {
+  const words = prompt
+    .trim()
+    .replace(/[^a-zA-Z0-9 ]/g, " ")
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 3);
+  return words.join(" ") || "Estimated meal";
+}
+
+function parseEstimateContent(content: string): { items: AIEstimateItem[]; mealLabel: string } {
   const parsed = JSON.parse(content) as {
     items?: Array<{ foodName?: unknown; name?: unknown; calories?: unknown }>;
+    mealLabel?: unknown;
   };
 
   if (!Array.isArray(parsed.items) || parsed.items.length === 0) {
@@ -203,7 +214,12 @@ function parseEstimateContent(content: string): AIEstimateItem[] {
     throw new Error("AI estimate could not be normalized");
   }
 
-  return items;
+  const mealLabel =
+    typeof parsed.mealLabel === "string" && parsed.mealLabel.trim().length > 0
+      ? parsed.mealLabel.trim().slice(0, 40)
+      : items[0]?.foodName ?? "Estimated meal";
+
+  return { items, mealLabel };
 }
 
 function normalizeRecipeIngredients(value: unknown): RecipeIngredient[] {
@@ -257,9 +273,10 @@ function parseRecipeEstimateContent(content: string): RecipeAIEstimate {
   };
 }
 
-export async function estimateCaloriesFromPrompt(prompt: string): Promise<AIEstimateItem[]> {
+export async function estimateCaloriesFromPrompt(prompt: string): Promise<{ items: AIEstimateItem[]; mealLabel: string }> {
   if (!process.env.OPENAI_API_KEY) {
-    return buildMockEstimate(prompt);
+    const items = buildMockEstimate(prompt);
+    return { items, mealLabel: buildMockMealLabel(prompt) };
   }
 
   const client = getClient();
@@ -272,7 +289,7 @@ export async function estimateCaloriesFromPrompt(prompt: string): Promise<AIEsti
       {
         role: "system",
         content:
-          "You estimate calories for food intake. Return JSON only with an 'items' array. Each item must include 'foodName' and integer 'calories'. No extra keys.",
+          "You estimate calories for food intake. Return JSON only with: an 'items' array (each with 'foodName' and integer 'calories'), and a 'mealLabel' field with a 2-3 word summary of the whole meal (e.g. 'Bagel Cream Cheese'). No extra keys.",
       },
       {
         role: "user",

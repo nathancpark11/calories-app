@@ -1,4 +1,4 @@
-import type { AIEstimateItem } from "@/lib/calories/types";
+import type { AIEstimateItem, MealCategory } from "@/lib/calories/types";
 
 export const DEFAULT_DAILY_GOAL = 2200;
 export const MAX_PROMPT_LENGTH = 300;
@@ -193,4 +193,13 @@ export function normalizeAIItems(value: unknown): AIEstimateItem[] | null {
     .filter((item): item is AIEstimateItem => item !== null);
 
   return normalized.length > 0 ? normalized : null;
+}
+
+const VALID_MEAL_CATEGORIES: MealCategory[] = ["breakfast", "lunch", "dinner", "snack"];
+
+export function sanitizeMealCategory(value: unknown): MealCategory | null {
+  if (typeof value === "string" && (VALID_MEAL_CATEGORIES as string[]).includes(value)) {
+    return value as MealCategory;
+  }
+  return null;
 }

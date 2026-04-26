@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type {
   AIEstimateItem,
@@ -8,6 +8,7 @@ import type {
   CalendarDayPayload,
   CalendarMonthDay,
   CalendarMonthPayload,
+  MealCategory,
   Recipe,
   RecipeAIEstimate,
   TodayPayload,
@@ -156,6 +157,7 @@ function buildCalendarGrid(monthKey: string, monthDays: CalendarMonthDay[]) {
 export default function CalorieTracker({ initialToday, initialProfile, showOnboarding = false }: Props) {
   const router = useRouter();
   const userMenuRef = useRef<HTMLDivElement | null>(null);
+  const recipeAddedTimeoutRef = useRef<number | null>(null);
   const [currentTab, setCurrentTab] = useState<AppTab>("today");
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -176,6 +178,9 @@ export default function CalorieTracker({ initialToday, initialProfile, showOnboa
   const [aiPrompt, setAiPrompt] = useState("");
   const [aiReviewItems, setAiReviewItems] = useState<AIEstimateItem[] | null>(null);
   const [aiReviewTotal, setAiReviewTotal] = useState(0);
+  const [aiMealLabel, setAiMealLabel] = useState("");
+  const [aiCategory, setAiCategory] = useState<MealCategory | "">("");
+  const [manualCategory, setManualCategory] = useState<MealCategory | "">("");
   const [todayError, setTodayError] = useState<string | null>(null);
 
   const [recipes, setRecipes] = useState<Recipe[]>([]);
@@ -186,6 +191,8 @@ export default function CalorieTracker({ initialToday, initialProfile, showOnboa
   const [recipeForm, setRecipeForm] = useState<RecipeFormState>(emptyRecipeForm);
   const [recipeAiPrompt, setRecipeAiPrompt] = useState("");
   const [recipeAiDraft, setRecipeAiDraft] = useState<RecipeAIEstimate | null>(null);
+  const [isRecipeAiEstimateOpen, setIsRecipeAiEstimateOpen] = useState(false);
+  const [recentlyAddedRecipeId, setRecentlyAddedRecipeId] = useState<string | null>(null);
 
   const [calendarLoading, setCalendarLoading] = useState(false);
   const [calendarError, setCalendarError] = useState<string | null>(null);
@@ -246,7 +253,7 @@ export default function CalorieTracker({ initialToday, initialProfile, showOnboa
     }
   }
 
-  async function refreshRecipes(search = recipeSearch) {
+  const refreshRecipes = useCallback(async (search = recipeSearch) => {
     setRecipesLoading(true);
     setRecipesError(null);
     try {
@@ -258,7 +265,7 @@ export default function CalorieTracker({ initialToday, initialProfile, showOnboa
     } finally {
       setRecipesLoading(false);
     }
-  }
+  }, [recipeSearch]);
 
   async function refreshCalendarMonth(month = currentMonth) {
     setCalendarLoading(true);
@@ -370,10 +377,12 @@ export default function CalorieTracker({ initialToday, initialProfile, showOnboa
         body: JSON.stringify({
           foodName: foodName.trim(),
           calories: parsed,
+          category: manualCategory || undefined,
         }),
       });
       setFoodName("");
       setManualCalories("");
+      setManualCategory("");
       await refreshToday();
       if (currentTab === "calendar") {
         const date = selectedDay?.date ?? getLocalDateKey();
@@ -397,12 +406,14 @@ export default function CalorieTracker({ initialToday, initialProfile, showOnboa
       const result = await fetchJson<{
         items: AIEstimateItem[];
         totalCalories: number;
+        mealLabel: string;
       }>("/api/calories/ai-estimate", {
         method: "POST",
         body: JSON.stringify({ prompt: aiPrompt }),
       });
       setAiReviewItems(result.items);
       setAiReviewTotal(result.totalCalories);
+      setAiMealLabel(result.mealLabel);
     } catch (requestError) {
       setTodayError((requestError as Error).message);
     } finally {
@@ -420,10 +431,15 @@ export default function CalorieTracker({ initialToday, initialProfile, showOnboa
     try {
       await fetchJson("/api/calories/confirm-ai-entry", {
         method: "POST",
-        body: JSON.stringify({ items: aiReviewItems }),
+        body: JSON.stringify({
+          items: [{ foodName: aiMealLabel || aiPrompt, calories: aiReviewTotal }],
+          category: aiCategory || undefined,
+        }),
       });
       setAiReviewItems(null);
       setAiReviewTotal(0);
+      setAiMealLabel("");
+      setAiCategory("");
       setAiPrompt("");
       await refreshToday();
       if (currentTab === "calendar") {
@@ -439,6 +455,8 @@ export default function CalorieTracker({ initialToday, initialProfile, showOnboa
   function cancelAI() {
     setAiReviewItems(null);
     setAiReviewTotal(0);
+    setAiMealLabel("");
+    setAiCategory("");
   }
 
   async function deleteEntry(entryId: string) {
@@ -478,9 +496,14 @@ export default function CalorieTracker({ initialToday, initialProfile, showOnboa
   }
 
   async function saveRecipe() {
+    const isEditingRecipe = Boolean(recipeForm.id);
     const totalCalories = Number.parseInt(recipeForm.totalCalories, 10);
-    const caloriesPerServing = Number.parseInt(recipeForm.caloriesPerServing, 10);
-    const servings = recipeForm.servings.trim().length > 0 ? Number.parseInt(recipeForm.servings, 10) : null;
+    const caloriesPerServing = isEditingRecipe
+      ? Number.parseInt(recipeForm.caloriesPerServing, 10)
+      : totalCalories;
+    const servings = isEditingRecipe && recipeForm.servings.trim().length > 0
+      ? Number.parseInt(recipeForm.servings, 10)
+      : null;
 
     if (!recipeForm.name.trim()) {
       setRecipesError("Recipe name is required.");
@@ -492,12 +515,12 @@ export default function CalorieTracker({ initialToday, initialProfile, showOnboa
       return;
     }
 
-    if (!Number.isFinite(caloriesPerServing) || caloriesPerServing <= 0) {
+    if (isEditingRecipe && (!Number.isFinite(caloriesPerServing) || caloriesPerServing <= 0)) {
       setRecipesError("Calories per serving must be a positive number.");
       return;
     }
 
-    if (servings !== null && (!Number.isFinite(servings) || servings <= 0)) {
+    if (isEditingRecipe && servings !== null && (!Number.isFinite(servings) || servings <= 0)) {
       setRecipesError("Servings must be a positive number.");
       return;
     }
@@ -510,8 +533,8 @@ export default function CalorieTracker({ initialToday, initialProfile, showOnboa
         totalCalories,
         servings,
         caloriesPerServing,
-        notes: recipeForm.notes,
-        ingredientsJson: recipeForm.ingredientsJson,
+        notes: isEditingRecipe ? recipeForm.notes : "",
+        ingredientsJson: isEditingRecipe ? recipeForm.ingredientsJson : "",
       };
 
       if (recipeForm.id) {
@@ -558,6 +581,14 @@ export default function CalorieTracker({ initialToday, initialProfile, showOnboa
         method: "POST",
         body: JSON.stringify({ servings: 1 }),
       });
+      setRecentlyAddedRecipeId(recipeId);
+      if (recipeAddedTimeoutRef.current !== null) {
+        window.clearTimeout(recipeAddedTimeoutRef.current);
+      }
+      recipeAddedTimeoutRef.current = window.setTimeout(() => {
+        setRecentlyAddedRecipeId((current) => (current === recipeId ? null : current));
+        recipeAddedTimeoutRef.current = null;
+      }, 1200);
       await refreshToday();
       if (currentTab === "calendar") {
         const date = selectedDay?.date ?? getLocalDateKey();
@@ -648,6 +679,14 @@ export default function CalorieTracker({ initialToday, initialProfile, showOnboa
   }, [isUserMenuOpen]);
 
   useEffect(() => {
+    return () => {
+      if (recipeAddedTimeoutRef.current !== null) {
+        window.clearTimeout(recipeAddedTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     if (currentTab !== "calendar") {
       return;
     }
@@ -691,6 +730,20 @@ export default function CalorieTracker({ initialToday, initialProfile, showOnboa
       };
     });
   }, [today, currentTab, selectedDay?.date]);
+
+  useEffect(() => {
+    if (currentTab !== "recipes") {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      void refreshRecipes(recipeSearch);
+    }, 250);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [currentTab, recipeSearch, refreshRecipes]);
 
   async function logout() {
     setTodayError(null);
@@ -997,6 +1050,22 @@ export default function CalorieTracker({ initialToday, initialProfile, showOnboa
                     placeholder="Calories"
                     className="h-11 rounded-xl border border-zinc-200 px-3 text-base outline-none ring-sky-200 transition focus:ring"
                   />
+                  <div className="grid grid-cols-4 gap-1.5">
+                    {(["breakfast", "lunch", "dinner", "snack"] as MealCategory[]).map((cat) => (
+                      <button
+                        key={cat}
+                        type="button"
+                        onClick={() => setManualCategory(manualCategory === cat ? "" : cat)}
+                        className={`h-9 rounded-xl border text-xs font-semibold capitalize transition ${
+                          manualCategory === cat
+                            ? "border-sky-500 bg-sky-50 text-sky-700"
+                            : "border-zinc-200 bg-white text-zinc-500 hover:bg-zinc-50"
+                        }`}
+                      >
+                        {cat}
+                      </button>
+                    ))}
+                  </div>
                   <button
                     type="button"
                     onClick={addManual}
@@ -1039,6 +1108,28 @@ export default function CalorieTracker({ initialToday, initialProfile, showOnboa
 
                       </ul>
                       <p className="mt-3 border-t border-zinc-200 pt-3 text-sm font-semibold">Total: {aiReviewTotal} cal</p>
+                      {aiMealLabel && (
+                        <div className="mt-3 flex items-center gap-2">
+                          <span className="text-xs text-zinc-500">Logged as:</span>
+                          <span className="rounded-lg bg-zinc-100 px-2 py-0.5 text-xs font-semibold text-zinc-700">{aiMealLabel}</span>
+                        </div>
+                      )}
+                      <div className="mt-3 grid grid-cols-4 gap-1.5">
+                        {(["breakfast", "lunch", "dinner", "snack"] as MealCategory[]).map((cat) => (
+                          <button
+                            key={cat}
+                            type="button"
+                            onClick={() => setAiCategory(aiCategory === cat ? "" : cat)}
+                            className={`h-9 rounded-xl border text-xs font-semibold capitalize transition ${
+                              aiCategory === cat
+                                ? "border-sky-500 bg-sky-50 text-sky-700"
+                                : "border-zinc-200 bg-white text-zinc-500 hover:bg-zinc-50"
+                            }`}
+                          >
+                            {cat}
+                          </button>
+                        ))}
+                      </div>
                       <div className="mt-3 flex gap-2">
                         <button
                           type="button"
@@ -1078,17 +1169,25 @@ export default function CalorieTracker({ initialToday, initialProfile, showOnboa
                     >
                       <div>
                         <p className="text-sm font-medium text-zinc-900">{entry.foodName}</p>
-                        <p className="text-xs text-zinc-500">{entry.source === "ai" ? "AI estimate" : "Manual"}</p>
+                        <p className="text-xs text-zinc-500">
+                          {entry.source === "ai" ? "AI estimate" : "Manual"}
+                          {entry.category && (
+                            <span className="ml-1.5 inline-block rounded-md bg-zinc-100 px-1.5 py-0.5 text-xs font-medium capitalize text-zinc-600">
+                              {entry.category}
+                            </span>
+                          )}
+                        </p>
                       </div>
                       <div className="flex items-center gap-3">
                         <p className="text-sm font-semibold text-zinc-900">{entry.calories} cal</p>
                         <button
                           type="button"
                           onClick={() => deleteEntry(entry.id)}
+                          aria-label="Delete entry"
                           disabled={todayLoading}
-                          className="h-11 rounded-lg border border-zinc-200 px-3 text-xs font-semibold text-zinc-600 transition hover:bg-zinc-100 disabled:opacity-50"
+                          className="grid h-8 w-8 place-items-center rounded-full border border-zinc-200 text-xs font-semibold text-zinc-600 transition hover:bg-zinc-100 disabled:opacity-50"
                         >
-                          Delete
+                          X
                         </button>
                       </div>
                     </li>
@@ -1116,138 +1215,167 @@ export default function CalorieTracker({ initialToday, initialProfile, showOnboa
                   Add Recipe
                 </button>
               </div>
-
-              <input
-                value={recipeSearch}
-                onChange={(event) => setRecipeSearch(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") {
-                    void refreshRecipes(event.currentTarget.value);
-                  }
-                }}
-                placeholder="Search recipes"
-                className="mt-4 h-11 w-full rounded-xl border border-zinc-200 px-3 text-base outline-none ring-sky-200 transition focus:ring"
-              />
-
-              <div className="mt-3 flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => refreshRecipes()}
-                  className="h-11 rounded-xl border border-zinc-200 bg-white px-3 text-sm font-semibold text-zinc-700 hover:bg-zinc-100"
-                >
-                  Search
-                </button>
-              </div>
             </section>
 
             <section className="rounded-2xl border border-white/90 bg-white/95 p-5 shadow-[0_16px_40px_-24px_rgba(15,23,42,0.4)]">
-              <h2 className="text-base font-semibold">AI Recipe Estimate</h2>
-              <textarea
-                value={recipeAiPrompt}
-                onChange={(event) => setRecipeAiPrompt(event.target.value)}
-                rows={3}
-                maxLength={300}
-                placeholder="Example: chicken rice bowl with avocado"
-                className="mt-3 rounded-xl border border-zinc-200 px-3 py-3 text-base outline-none ring-sky-200 transition focus:ring"
-              />
               <button
                 type="button"
-                onClick={estimateRecipeWithAI}
-                disabled={recipesLoading}
-                className="mt-3 h-11 rounded-xl bg-sky-600 px-4 text-sm font-semibold text-white transition hover:bg-sky-500 disabled:opacity-50"
+                onClick={() => setIsRecipeAiEstimateOpen((prev) => !prev)}
+                aria-expanded={isRecipeAiEstimateOpen}
+                className="flex w-full items-center justify-between gap-2 text-left"
               >
-                Estimate Recipe with AI
+                <h2 className="text-base font-semibold">AI Recipe Estimate</h2>
+                <span className="text-sm font-semibold text-zinc-500">{isRecipeAiEstimateOpen ? "Hide" : "Show"}</span>
               </button>
 
-              {recipeAiDraft && (
-                <div className="mt-3 rounded-xl border border-zinc-200 bg-zinc-50 p-4">
-                  <p className="text-sm font-semibold">Review before saving</p>
-                  <p className="mt-2 text-sm text-zinc-700">{recipeAiDraft.recipeName}</p>
-                  <p className="mt-1 text-sm text-zinc-700">Total: {recipeAiDraft.totalCalories} cal</p>
-                  <p className="mt-1 text-sm text-zinc-700">Servings: {recipeAiDraft.servings}</p>
-                  <p className="mt-1 text-sm text-zinc-700">Per serving: {recipeAiDraft.caloriesPerServing} cal</p>
+              {isRecipeAiEstimateOpen && (
+                <>
+                  <textarea
+                    value={recipeAiPrompt}
+                    onChange={(event) => setRecipeAiPrompt(event.target.value)}
+                    rows={3}
+                    maxLength={300}
+                    placeholder="Example: chicken rice bowl with avocado"
+                    className="mt-3 w-full rounded-xl border border-zinc-200 px-3 py-3 text-base outline-none ring-sky-200 transition focus:ring"
+                  />
                   <button
                     type="button"
-                    onClick={confirmRecipeAIToForm}
-                    className="mt-3 h-11 rounded-xl bg-emerald-600 px-4 text-sm font-semibold text-white hover:bg-emerald-500"
+                    onClick={estimateRecipeWithAI}
+                    disabled={recipesLoading}
+                    className="mt-3 mx-auto block h-11 rounded-xl bg-sky-600 px-4 text-sm font-semibold text-white transition hover:bg-sky-500 disabled:opacity-50"
                   >
-                    Use in Form
+                    Estimate Recipe with AI
                   </button>
-                </div>
+
+                  {recipeAiDraft && (
+                    <div className="mt-3 rounded-xl border border-zinc-200 bg-zinc-50 p-4">
+                      <p className="text-sm font-semibold">Review before saving</p>
+                      <p className="mt-2 text-sm text-zinc-700">{recipeAiDraft.recipeName}</p>
+                      <p className="mt-1 text-sm text-zinc-700">Total: {recipeAiDraft.totalCalories} cal</p>
+                      <p className="mt-1 text-sm text-zinc-700">Servings: {recipeAiDraft.servings}</p>
+                      <p className="mt-1 text-sm text-zinc-700">Per serving: {recipeAiDraft.caloriesPerServing} cal</p>
+                      <button
+                        type="button"
+                        onClick={confirmRecipeAIToForm}
+                        className="mt-3 h-11 rounded-xl bg-emerald-600 px-4 text-sm font-semibold text-white hover:bg-emerald-500"
+                      >
+                        Use in Form
+                      </button>
+                    </div>
+                  )}
+                </>
               )}
             </section>
 
             {showRecipeForm && (
-              <section className="rounded-2xl border border-white/90 bg-white/95 p-5 shadow-[0_16px_40px_-24px_rgba(15,23,42,0.4)]">
-                <h2 className="text-base font-semibold">{recipeForm.id ? "Edit Recipe" : "New Recipe"}</h2>
-                <div className="mt-3 grid gap-3">
-                  <input
-                    value={recipeForm.name}
-                    onChange={(event) => setRecipeForm((prev) => ({ ...prev, name: event.target.value }))}
-                    placeholder="Recipe name"
-                    className="h-11 rounded-xl border border-zinc-200 px-3 text-base outline-none ring-sky-200 transition focus:ring"
-                  />
-                  <input
-                    value={recipeForm.totalCalories}
-                    onChange={(event) => setRecipeForm((prev) => ({ ...prev, totalCalories: event.target.value }))}
-                    inputMode="numeric"
-                    placeholder="Total calories"
-                    className="h-11 rounded-xl border border-zinc-200 px-3 text-base outline-none ring-sky-200 transition focus:ring"
-                  />
-                  <input
-                    value={recipeForm.servings}
-                    onChange={(event) => setRecipeForm((prev) => ({ ...prev, servings: event.target.value }))}
-                    inputMode="numeric"
-                    placeholder="Servings (optional)"
-                    className="h-11 rounded-xl border border-zinc-200 px-3 text-base outline-none ring-sky-200 transition focus:ring"
-                  />
-                  <input
-                    value={recipeForm.caloriesPerServing}
-                    onChange={(event) => setRecipeForm((prev) => ({ ...prev, caloriesPerServing: event.target.value }))}
-                    inputMode="numeric"
-                    placeholder="Calories per serving"
-                    className="h-11 rounded-xl border border-zinc-200 px-3 text-base outline-none ring-sky-200 transition focus:ring"
-                  />
-                  <textarea
-                    value={recipeForm.notes}
-                    onChange={(event) => setRecipeForm((prev) => ({ ...prev, notes: event.target.value }))}
-                    rows={2}
-                    placeholder="Notes or ingredients"
-                    className="rounded-xl border border-zinc-200 px-3 py-3 text-base outline-none ring-sky-200 transition focus:ring"
-                  />
-                  <textarea
-                    value={recipeForm.ingredientsJson}
-                    onChange={(event) => setRecipeForm((prev) => ({ ...prev, ingredientsJson: event.target.value }))}
-                    rows={3}
-                    placeholder="Ingredients JSON (optional)"
-                    className="rounded-xl border border-zinc-200 px-3 py-3 font-mono text-base outline-none ring-sky-200 transition focus:ring"
-                  />
-                </div>
-                <div className="mt-3 flex gap-2">
-                  <button
-                    type="button"
-                    onClick={saveRecipe}
-                    disabled={recipesLoading}
-                    className="h-11 flex-1 rounded-xl bg-zinc-900 px-4 text-sm font-semibold text-white hover:bg-zinc-700 disabled:opacity-50"
-                  >
-                    Save
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowRecipeForm(false);
-                      setRecipeForm(emptyRecipeForm);
-                    }}
-                    className="h-11 flex-1 rounded-xl border border-zinc-200 bg-white px-4 text-sm font-semibold text-zinc-700 hover:bg-zinc-100"
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </section>
+              <div
+                className="fixed inset-0 z-60 flex items-center justify-center bg-zinc-900/45 px-4 py-6"
+                onClick={() => {
+                  setShowRecipeForm(false);
+                  setRecipeForm(emptyRecipeForm);
+                }}
+              >
+                <section
+                  role="dialog"
+                  aria-modal="true"
+                  aria-label={recipeForm.id ? "Edit Recipe" : "New Recipe"}
+                  className="max-h-[90vh] w-full max-w-xl overflow-y-auto rounded-2xl border border-white/90 bg-white/98 p-5 shadow-[0_24px_60px_-30px_rgba(15,23,42,0.55)]"
+                  onClick={(event) => event.stopPropagation()}
+                >
+                  <h2 className="text-base font-semibold">{recipeForm.id ? "Edit Recipe" : "New Recipe"}</h2>
+                  <div className="mt-3 grid gap-3">
+                    <input
+                      value={recipeForm.name}
+                      onChange={(event) => setRecipeForm((prev) => ({ ...prev, name: event.target.value }))}
+                      placeholder="Recipe name"
+                      className="h-11 rounded-xl border border-zinc-200 px-3 text-base outline-none ring-sky-200 transition focus:ring"
+                    />
+                    <input
+                      value={recipeForm.totalCalories}
+                      onChange={(event) => setRecipeForm((prev) => ({ ...prev, totalCalories: event.target.value }))}
+                      inputMode="numeric"
+                      placeholder="Total calories"
+                      className="h-11 rounded-xl border border-zinc-200 px-3 text-base outline-none ring-sky-200 transition focus:ring"
+                    />
+                    {recipeForm.id && (
+                      <>
+                        <input
+                          value={recipeForm.servings}
+                          onChange={(event) => setRecipeForm((prev) => ({ ...prev, servings: event.target.value }))}
+                          inputMode="numeric"
+                          placeholder="Servings (optional)"
+                          className="h-11 rounded-xl border border-zinc-200 px-3 text-base outline-none ring-sky-200 transition focus:ring"
+                        />
+                        <input
+                          value={recipeForm.caloriesPerServing}
+                          onChange={(event) => setRecipeForm((prev) => ({ ...prev, caloriesPerServing: event.target.value }))}
+                          inputMode="numeric"
+                          placeholder="Calories per serving"
+                          className="h-11 rounded-xl border border-zinc-200 px-3 text-base outline-none ring-sky-200 transition focus:ring"
+                        />
+                        <textarea
+                          value={recipeForm.notes}
+                          onChange={(event) => setRecipeForm((prev) => ({ ...prev, notes: event.target.value }))}
+                          rows={2}
+                          placeholder="Notes or ingredients"
+                          className="rounded-xl border border-zinc-200 px-3 py-3 text-base outline-none ring-sky-200 transition focus:ring"
+                        />
+                        <textarea
+                          value={recipeForm.ingredientsJson}
+                          onChange={(event) => setRecipeForm((prev) => ({ ...prev, ingredientsJson: event.target.value }))}
+                          rows={3}
+                          placeholder="Ingredients JSON (optional)"
+                          className="rounded-xl border border-zinc-200 px-3 py-3 font-mono text-base outline-none ring-sky-200 transition focus:ring"
+                        />
+                      </>
+                    )}
+                  </div>
+                  <div className="mt-3 flex gap-2">
+                    <button
+                      type="button"
+                      onClick={saveRecipe}
+                      disabled={recipesLoading}
+                      className="h-11 flex-1 rounded-xl bg-zinc-900 px-4 text-sm font-semibold text-white hover:bg-zinc-700 disabled:opacity-50"
+                    >
+                      Save
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowRecipeForm(false);
+                        setRecipeForm(emptyRecipeForm);
+                      }}
+                      className="h-11 flex-1 rounded-xl border border-zinc-200 bg-white px-4 text-sm font-semibold text-zinc-700 hover:bg-zinc-100"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                  {recipeForm.id && (
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        await deleteRecipe(recipeForm.id!);
+                        setShowRecipeForm(false);
+                        setRecipeForm(emptyRecipeForm);
+                      }}
+                      disabled={recipesLoading}
+                      className="mt-3 h-11 w-full rounded-xl border border-rose-200 bg-rose-50 px-4 text-sm font-semibold text-rose-700 transition hover:bg-rose-100 disabled:opacity-50"
+                    >
+                      Delete Recipe
+                    </button>
+                  )}
+                </section>
+              </div>
             )}
 
             <section className="rounded-2xl border border-white/90 bg-white/95 p-5 shadow-[0_16px_40px_-24px_rgba(15,23,42,0.4)]">
               <h2 className="text-base font-semibold">Saved Recipes</h2>
+              <input
+                value={recipeSearch}
+                onChange={(event) => setRecipeSearch(event.target.value)}
+                placeholder="Search recipes"
+                className="mt-4 h-11 w-full rounded-xl border border-zinc-200 px-3 text-base outline-none ring-sky-200 transition focus:ring"
+              />
               <ul className="mt-4 space-y-3">
                 {recipes.length === 0 ? (
                   <li className="rounded-xl border border-dashed border-zinc-300 px-3 py-6 text-center text-sm text-zinc-500">
@@ -1259,32 +1387,24 @@ export default function CalorieTracker({ initialToday, initialProfile, showOnboa
                       <div className="flex items-start justify-between gap-3">
                         <div>
                           <p className="text-sm font-semibold text-zinc-900">{recipe.name}</p>
-                          <p className="mt-1 text-xs text-zinc-600">Per serving: {recipe.caloriesPerServing} cal</p>
                           <p className="text-xs text-zinc-600">Total: {recipe.totalCalories} cal</p>
                         </div>
-                        <button
-                          type="button"
-                          onClick={() => addRecipeToToday(recipe.id)}
-                          className="h-11 rounded-xl bg-emerald-600 px-4 text-sm font-semibold text-white hover:bg-emerald-500"
-                        >
-                          Add
-                        </button>
-                      </div>
-                      <div className="mt-3 flex gap-2">
-                        <button
-                          type="button"
-                          onClick={() => openEditRecipeForm(recipe)}
-                          className="h-11 rounded-xl border border-zinc-200 bg-white px-4 text-xs font-semibold text-zinc-700 hover:bg-zinc-100"
-                        >
-                          Edit
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => deleteRecipe(recipe.id)}
-                          className="h-11 rounded-xl border border-rose-200 bg-rose-50 px-4 text-xs font-semibold text-rose-700 hover:bg-rose-100"
-                        >
-                          Delete
-                        </button>
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => openEditRecipeForm(recipe)}
+                            className="h-11 rounded-xl border border-zinc-200 bg-white px-4 text-xs font-semibold text-zinc-700 hover:bg-zinc-100"
+                          >
+                            Edit
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => addRecipeToToday(recipe.id)}
+                            className="h-11 min-w-11 rounded-xl bg-emerald-600 px-4 text-sm font-semibold text-white hover:bg-emerald-500"
+                          >
+                            {recentlyAddedRecipeId === recipe.id ? "✓" : "Add"}
+                          </button>
+                        </div>
                       </div>
                     </li>
                   ))
@@ -1497,9 +1617,6 @@ export default function CalorieTracker({ initialToday, initialProfile, showOnboa
                 type="button"
                 onClick={() => {
                   setCurrentTab(key);
-                  if (key === "recipes") {
-                    void refreshRecipes();
-                  }
                   if (key === "calendar") {
                     const date = getLocalDateKey();
                     void refreshCalendarSelection(date);

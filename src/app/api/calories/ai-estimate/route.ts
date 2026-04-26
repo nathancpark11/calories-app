@@ -31,13 +31,14 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const items = await estimateCaloriesFromPrompt(prompt);
-    const totalCalories = items.reduce((sum, item) => sum + item.calories, 0);
+    const result = await estimateCaloriesFromPrompt(prompt);
+    const totalCalories = result.items.reduce((sum, item) => sum + item.calories, 0);
 
     return withUserCookie(
       NextResponse.json({
         prompt,
-        items,
+        items: result.items,
+        mealLabel: result.mealLabel,
         totalCalories,
         requiresConfirmation: true,
         rateLimit: {
