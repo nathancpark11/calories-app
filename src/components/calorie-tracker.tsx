@@ -8,18 +8,20 @@ import type {
   CalendarDayPayload,
   CalendarMonthDay,
   CalendarMonthPayload,
+  ExerciseEntry,
   MealCategory,
   Recipe,
   RecipeAIEstimate,
   TodayPayload,
 } from "@/lib/calories/types";
 import type { PublicUserProfile } from "@/lib/auth/types";
+import type { OnboardingProfile } from "@/lib/onboarding/types";
 
 type TodayEntryTab = "manual" | "ai";
 type AppTab = "today" | "recipes" | "calendar";
 type GoalSex = "female" | "male";
-type GoalActivityLevel = "sedentary" | "light" | "moderate" | "active" | "very_active";
-type GoalPace = "lose" | "maintain" | "gain";
+type GoalType = "lose" | "maintain" | "gain";
+type GoalStrategy = "slow" | "moderate" | "aggressive";
 
 type Props = {
   initialToday: TodayPayload;
@@ -30,16 +32,24 @@ type Props = {
 type OnboardingGoalForm = {
   sex: GoalSex;
   age: string;
-  heightCm: string;
-  weightKg: string;
-  activityLevel: GoalActivityLevel;
-  goalPace: GoalPace;
+  heightInches: string;
+  weightLbs: string;
+  goalType: GoalType;
+  goalStrategy: GoalStrategy;
 };
 
 type OnboardingGoalEstimate = {
-  recommendedDailyGoal: number;
+  estimatedBmr: number;
   maintenanceCalories: number;
-  reasoning: string[];
+  recommendedDailyCalories: number;
+  calorieAdjustment: number;
+  disclaimer: string;
+};
+type BaseMetabolicEstimate = {
+  estimatedBmr: number;
+  maintenanceCalories: number;
+  recommendedDailyCalories: number;
+  calorieAdjustment: number;
   disclaimer: string;
 };
 
@@ -51,6 +61,12 @@ type RecipeFormState = {
   caloriesPerServing: string;
   notes: string;
   ingredientsJson: string;
+};
+
+type EntryEditForm = {
+  foodName: string;
+  calories: string;
+  category: MealCategory | "";
 };
 
 const emptyRecipeForm: RecipeFormState = {
@@ -65,10 +81,10 @@ const emptyRecipeForm: RecipeFormState = {
 const defaultOnboardingGoalForm: OnboardingGoalForm = {
   sex: "female",
   age: "30",
-  heightCm: "165",
-  weightKg: "68",
-  activityLevel: "moderate",
-  goalPace: "maintain",
+  heightInches: "65",
+  weightLbs: "150",
+  goalType: "maintain",
+  goalStrategy: "moderate",
 };
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
@@ -154,6 +170,23 @@ function buildCalendarGrid(monthKey: string, monthDays: CalendarMonthDay[]) {
   return [...blanks, ...days];
 }
 
+function toOnboardingSavePayload(form: OnboardingGoalForm) {
+  const age = Number.parseInt(form.age, 10);
+  const heightInches = Number.parseInt(form.heightInches, 10);
+  const weightLbs = Number.parseInt(form.weightLbs, 10);
+  if (!Number.isFinite(age) || !Number.isFinite(heightInches) || !Number.isFinite(weightLbs)) {
+    return null;
+  }
+  return {
+    age,
+    sex: form.sex,
+    heightInches,
+    weightLbs,
+    goalType: form.goalType,
+    goalPace: form.goalStrategy,
+  };
+}
+
 export default function CalorieTracker({ initialToday, initialProfile, showOnboarding = false }: Props) {
   const router = useRouter();
   const userMenuRef = useRef<HTMLDivElement | null>(null);
@@ -163,7 +196,12 @@ export default function CalorieTracker({ initialToday, initialProfile, showOnboa
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isDeleteConfirming, setIsDeleteConfirming] = useState(false);
   const [settingsError, setSettingsError] = useState<string | null>(null);
+  const [settingsSuccess, setSettingsSuccess] = useState<string | null>(null);
+  const [settingsGoalLoading, setSettingsGoalLoading] = useState(false);
+  const [settingsBaseEstimate, setSettingsBaseEstimate] = useState<BaseMetabolicEstimate | null>(null);
   const [isAccountDeleting, setIsAccountDeleting] = useState(false);
+  const [isRecalculateExpanded, setIsRecalculateExpanded] = useState(false);
+  const [settingsProfileLoading, setSettingsProfileLoading] = useState(false);
 
   const [todayEntryTab, setTodayEntryTab] = useState<TodayEntryTab>("manual");
   const [todayLoading, setTodayLoading] = useState(false);
@@ -181,7 +219,15 @@ export default function CalorieTracker({ initialToday, initialProfile, showOnboa
   const [aiMealLabel, setAiMealLabel] = useState("");
   const [aiCategory, setAiCategory] = useState<MealCategory | "">("");
   const [manualCategory, setManualCategory] = useState<MealCategory | "">("");
+  const [exerciseDescription, setExerciseDescription] = useState("");
+  const [exerciseCaloriesBurned, setExerciseCaloriesBurned] = useState("");
   const [todayError, setTodayError] = useState<string | null>(null);
+  const [editingEntryId, setEditingEntryId] = useState<string | null>(null);
+  const [entryEditForm, setEntryEditForm] = useState<EntryEditForm>({
+    foodName: "",
+    calories: "",
+    category: "",
+  });
 
   const [recipes, setRecipes] = useState<Recipe[]>([]);
   const [recipesLoading, setRecipesLoading] = useState(false);
@@ -193,6 +239,7 @@ export default function CalorieTracker({ initialToday, initialProfile, showOnboa
   const [recipeAiDraft, setRecipeAiDraft] = useState<RecipeAIEstimate | null>(null);
   const [isRecipeAiEstimateOpen, setIsRecipeAiEstimateOpen] = useState(false);
   const [recentlyAddedRecipeId, setRecentlyAddedRecipeId] = useState<string | null>(null);
+  const [recipeMealPickerId, setRecipeMealPickerId] = useState<string | null>(null);
 
   const [calendarLoading, setCalendarLoading] = useState(false);
   const [calendarError, setCalendarError] = useState<string | null>(null);
@@ -237,8 +284,14 @@ export default function CalorieTracker({ initialToday, initialProfile, showOnboa
           remaining: today.remaining,
           status: todayCalendarStatus,
           entries: today.entries,
+          exercises: today.exercises,
         }
       : selectedDay;
+
+  const recipeForMealPicker = useMemo(
+    () => recipes.find((recipe) => recipe.id === recipeMealPickerId) ?? null,
+    [recipes, recipeMealPickerId],
+  );
 
   async function refreshToday() {
     setTodayLoading(true);
@@ -309,11 +362,8 @@ export default function CalorieTracker({ initialToday, initialProfile, showOnboa
   }
 
   async function estimateOnboardingGoal() {
-    const age = Number.parseInt(onboardingGoalForm.age, 10);
-    const heightCm = Number.parseInt(onboardingGoalForm.heightCm, 10);
-    const weightKg = Number.parseInt(onboardingGoalForm.weightKg, 10);
-
-    if (!Number.isFinite(age) || !Number.isFinite(heightCm) || !Number.isFinite(weightKg)) {
+    const payload = toOnboardingSavePayload(onboardingGoalForm);
+    if (!payload) {
       setOnboardingGoalError("Enter valid numbers for age, height, and weight.");
       return;
     }
@@ -321,19 +371,12 @@ export default function CalorieTracker({ initialToday, initialProfile, showOnboa
     setOnboardingGoalLoading(true);
     setOnboardingGoalError(null);
     try {
-      const payload = await fetchJson<{ estimate: OnboardingGoalEstimate }>("/api/calories/ai-goal", {
+      const response = await fetchJson<{ result: OnboardingGoalEstimate }>("/api/onboarding/calculate-goal", {
         method: "POST",
-        body: JSON.stringify({
-          sex: onboardingGoalForm.sex,
-          age,
-          heightCm,
-          weightKg,
-          activityLevel: onboardingGoalForm.activityLevel,
-          goalPace: onboardingGoalForm.goalPace,
-        }),
+        body: JSON.stringify(payload),
       });
 
-      setOnboardingGoalEstimate(payload.estimate);
+      setOnboardingGoalEstimate(response.result);
     } catch (requestError) {
       setOnboardingGoalError((requestError as Error).message);
     } finally {
@@ -351,7 +394,7 @@ export default function CalorieTracker({ initialToday, initialProfile, showOnboa
     try {
       await fetchJson("/api/auth/settings", {
         method: "POST",
-        body: JSON.stringify({ dailyCalorieGoal: onboardingGoalEstimate.recommendedDailyGoal }),
+        body: JSON.stringify({ dailyCalorieGoal: onboardingGoalEstimate.recommendedDailyCalories }),
       });
       await refreshToday();
       dismissOnboardingCard();
@@ -475,6 +518,162 @@ export default function CalorieTracker({ initialToday, initialProfile, showOnboa
     }
   }
 
+  async function addExercise() {
+    const parsed = Number.parseInt(exerciseCaloriesBurned, 10);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      setTodayError("Exercise calories must be a positive number.");
+      return;
+    }
+
+    setTodayLoading(true);
+    setTodayError(null);
+    try {
+      await fetchJson("/api/calories/exercise/add", {
+        method: "POST",
+        body: JSON.stringify({
+          description: exerciseDescription.trim(),
+          caloriesBurned: parsed,
+        }),
+      });
+
+      setExerciseDescription("");
+      setExerciseCaloriesBurned("");
+      await refreshToday();
+      if (currentTab === "calendar") {
+        const date = selectedDay?.date ?? getLocalDateKey();
+        await refreshCalendarSelection(date);
+      }
+    } catch (requestError) {
+      setTodayError((requestError as Error).message);
+      setTodayLoading(false);
+    }
+  }
+
+  async function deleteExercise(entryId: string) {
+    setTodayLoading(true);
+    setTodayError(null);
+    try {
+      await fetchJson(`/api/calories/exercise/${entryId}`, { method: "DELETE" });
+      await refreshToday();
+      if (currentTab === "calendar") {
+        const date = selectedDay?.date ?? getLocalDateKey();
+        await refreshCalendarSelection(date);
+      }
+    } catch (requestError) {
+      setTodayError((requestError as Error).message);
+      setTodayLoading(false);
+    }
+  }
+  async function estimateSettingsBaseMetabolicGoal() {
+    const payload = toOnboardingSavePayload(onboardingGoalForm);
+    if (!payload) {
+      setSettingsError("Enter valid numbers for age, height, and weight.");
+      return;
+    }
+    setSettingsGoalLoading(true);
+    setSettingsError(null);
+    setSettingsSuccess(null);
+    try {
+      const response = await fetchJson<{
+        result: {
+          estimatedBmr: number;
+          maintenanceCalories: number;
+          recommendedDailyCalories: number;
+          calorieAdjustment: number;
+          disclaimer: string;
+        };
+      }>("/api/onboarding/calculate-goal", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      setSettingsBaseEstimate({
+        estimatedBmr: response.result.estimatedBmr,
+        maintenanceCalories: response.result.maintenanceCalories,
+        recommendedDailyCalories: response.result.recommendedDailyCalories,
+        calorieAdjustment: response.result.calorieAdjustment,
+        disclaimer: response.result.disclaimer,
+      });
+    } catch (requestError) {
+      setSettingsError((requestError as Error).message);
+    } finally {
+      setSettingsGoalLoading(false);
+    }
+  }
+
+  async function applySettingsBaseMetabolicGoal() {
+    const payload = toOnboardingSavePayload(onboardingGoalForm);
+    if (!payload) {
+      setSettingsError("Enter valid numbers for age, height, and weight.");
+      return;
+    }
+    if (!settingsBaseEstimate) {
+      setSettingsError("Estimate your base metabolic goal first.");
+      return;
+    }
+    setSettingsGoalLoading(true);
+    setSettingsError(null);
+    setSettingsSuccess(null);
+    try {
+      await fetchJson("/api/onboarding/save-profile", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      await refreshToday();
+      setSettingsSuccess(
+        `Updated your daily target to ${settingsBaseEstimate.recommendedDailyCalories.toLocaleString()} cal/day based on goal and strategy.`,
+      );
+    } catch (requestError) {
+      setSettingsError((requestError as Error).message);
+    } finally {
+      setSettingsGoalLoading(false);
+    }
+  }
+
+  function startEditEntry(entry: CalorieEntry) {
+    setEditingEntryId(entry.id);
+    setEntryEditForm({
+      foodName: entry.foodName,
+      calories: String(entry.calories),
+      category: entry.category ?? "",
+    });
+  }
+
+  function cancelEditEntry() {
+    setEditingEntryId(null);
+    setEntryEditForm({ foodName: "", calories: "", category: "" });
+  }
+
+  async function saveEntryEdit(entryId: string) {
+    const parsedCalories = Number.parseInt(entryEditForm.calories, 10);
+    if (!Number.isFinite(parsedCalories) || parsedCalories <= 0) {
+      setTodayError("Calories must be a positive number.");
+      return;
+    }
+
+    setTodayLoading(true);
+    setTodayError(null);
+    try {
+      await fetchJson(`/api/calories/entry/${entryId}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          foodName: entryEditForm.foodName,
+          calories: parsedCalories,
+          category: entryEditForm.category || null,
+        }),
+      });
+
+      cancelEditEntry();
+      await refreshToday();
+      if (currentTab === "calendar") {
+        const date = selectedDay?.date ?? getLocalDateKey();
+        await refreshCalendarSelection(date);
+      }
+    } catch (requestError) {
+      setTodayError((requestError as Error).message);
+      setTodayLoading(false);
+    }
+  }
+
   function openNewRecipeForm() {
     setShowRecipeForm(true);
     setRecipeAiDraft(null);
@@ -573,15 +772,16 @@ export default function CalorieTracker({ initialToday, initialProfile, showOnboa
     }
   }
 
-  async function addRecipeToToday(recipeId: string) {
+  async function addRecipeToToday(recipeId: string, category: MealCategory) {
     setRecipesLoading(true);
     setRecipesError(null);
     try {
       await fetchJson(`/api/recipes/${recipeId}/add-to-today`, {
         method: "POST",
-        body: JSON.stringify({ servings: 1 }),
+        body: JSON.stringify({ servings: 1, category }),
       });
       setRecentlyAddedRecipeId(recipeId);
+      setRecipeMealPickerId(null);
       if (recipeAddedTimeoutRef.current !== null) {
         window.clearTimeout(recipeAddedTimeoutRef.current);
       }
@@ -704,9 +904,11 @@ export default function CalorieTracker({ initialToday, initialProfile, showOnboa
       date: todayDate,
       dailyGoal: today.dailyGoal,
       consumed: today.consumed,
+      burned: today.burned ?? 0,
       remaining: today.remaining,
       status,
       entries: today.entries,
+      exercises: today.exercises ?? [],
     });
 
     setCalendarMonth((prev) => {
@@ -759,11 +961,40 @@ export default function CalorieTracker({ initialToday, initialProfile, showOnboa
     }
   }
 
-  function openSettings() {
+  async function openSettings() {
     setIsUserMenuOpen(false);
     setSettingsError(null);
     setIsDeleteConfirming(false);
     setIsSettingsOpen(true);
+    setSettingsSuccess(null);
+    setIsRecalculateExpanded(false);
+    setSettingsProfileLoading(true);
+
+    try {
+      const response = await fetchJson<{ profile: OnboardingProfile }>("/api/onboarding/profile");
+      const profile = response.profile;
+      
+      // Populate the form with saved profile data
+      setOnboardingGoalForm({
+        sex: profile.sex,
+        age: profile.age.toString(),
+        heightInches: profile.heightInches.toString(),
+        weightLbs: profile.weightLbs.toString(),
+        goalType: profile.goalType,
+        goalStrategy: profile.goalPace,
+      });
+    } catch (error) {
+      // Profile not found or error fetching - will use defaults
+      console.debug("Could not load profile:", (error as Error).message);
+    } finally {
+      setSettingsProfileLoading(false);
+    }
+  }
+
+  function toggleRecalculate() {
+    setIsRecalculateExpanded((prev) => !prev);
+    setSettingsBaseEstimate(null);
+    setSettingsError(null);
   }
 
   function closeSettings() {
@@ -774,10 +1005,12 @@ export default function CalorieTracker({ initialToday, initialProfile, showOnboa
     setIsSettingsOpen(false);
     setIsDeleteConfirming(false);
     setSettingsError(null);
+    setSettingsSuccess(null);
   }
 
   async function deleteAccount() {
     setSettingsError(null);
+    setSettingsSuccess(null);
     setIsAccountDeleting(true);
 
     try {
@@ -801,9 +1034,9 @@ export default function CalorieTracker({ initialToday, initialProfile, showOnboa
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <p className="text-xs font-semibold uppercase tracking-[0.16em] text-sky-600">Welcome</p>
-                    <h2 className="mt-1 text-lg font-semibold text-zinc-900">Set your daily target with AI</h2>
+                    <h2 className="mt-1 text-lg font-semibold text-zinc-900">Set your daily target</h2>
                     <p className="mt-1 text-sm text-zinc-600">
-                      Share your profile and goal pace to estimate a daily calorie max before you start logging.
+                      Share your profile, goal, and strategy to set a target from base metabolic calories.
                     </p>
                   </div>
                   <button
@@ -841,57 +1074,52 @@ export default function CalorieTracker({ initialToday, initialProfile, showOnboa
                   </label>
 
                   <label className="grid gap-1 text-xs font-semibold uppercase tracking-wide text-zinc-500">
-                    Height (cm)
+                    Height (inches)
                     <input
                       inputMode="numeric"
-                      value={onboardingGoalForm.heightCm}
-                      onChange={(event) => setOnboardingGoalForm((prev) => ({ ...prev, heightCm: event.target.value }))}
+                      value={onboardingGoalForm.heightInches}
+                      onChange={(event) => setOnboardingGoalForm((prev) => ({ ...prev, heightInches: event.target.value }))}
                       className="h-11 rounded-xl border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-800 outline-none ring-sky-200 transition focus:ring"
                     />
                   </label>
 
                   <label className="grid gap-1 text-xs font-semibold uppercase tracking-wide text-zinc-500">
-                    Weight (kg)
+                    Weight (lbs)
                     <input
                       inputMode="numeric"
-                      value={onboardingGoalForm.weightKg}
-                      onChange={(event) => setOnboardingGoalForm((prev) => ({ ...prev, weightKg: event.target.value }))}
+                      value={onboardingGoalForm.weightLbs}
+                      onChange={(event) => setOnboardingGoalForm((prev) => ({ ...prev, weightLbs: event.target.value }))}
                       className="h-11 rounded-xl border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-800 outline-none ring-sky-200 transition focus:ring"
                     />
-                  </label>
-
-                  <label className="grid gap-1 text-xs font-semibold uppercase tracking-wide text-zinc-500">
-                    Activity
-                    <select
-                      value={onboardingGoalForm.activityLevel}
-                      onChange={(event) =>
-                        setOnboardingGoalForm((prev) => ({
-                          ...prev,
-                          activityLevel: event.target.value as GoalActivityLevel,
-                        }))
-                      }
-                      className="h-11 rounded-xl border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-800 outline-none ring-sky-200 transition focus:ring"
-                    >
-                      <option value="sedentary">Sedentary</option>
-                      <option value="light">Light activity</option>
-                      <option value="moderate">Moderate activity</option>
-                      <option value="active">Active</option>
-                      <option value="very_active">Very active</option>
-                    </select>
                   </label>
 
                   <label className="grid gap-1 text-xs font-semibold uppercase tracking-wide text-zinc-500">
                     Goal
                     <select
-                      value={onboardingGoalForm.goalPace}
+                      value={onboardingGoalForm.goalType}
                       onChange={(event) =>
-                        setOnboardingGoalForm((prev) => ({ ...prev, goalPace: event.target.value as GoalPace }))
+                        setOnboardingGoalForm((prev) => ({ ...prev, goalType: event.target.value as GoalType }))
                       }
                       className="h-11 rounded-xl border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-800 outline-none ring-sky-200 transition focus:ring"
                     >
-                      <option value="lose">Lose weight</option>
-                      <option value="maintain">Maintain weight</option>
-                      <option value="gain">Gain weight</option>
+                      <option value="lose">Lose</option>
+                      <option value="maintain">Maintain</option>
+                      <option value="gain">Gain</option>
+                    </select>
+                  </label>
+
+                  <label className="grid gap-1 text-xs font-semibold uppercase tracking-wide text-zinc-500">
+                    Strategy
+                    <select
+                      value={onboardingGoalForm.goalStrategy}
+                      onChange={(event) =>
+                        setOnboardingGoalForm((prev) => ({ ...prev, goalStrategy: event.target.value as GoalStrategy }))
+                      }
+                      className="h-11 rounded-xl border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-800 outline-none ring-sky-200 transition focus:ring"
+                    >
+                      <option value="slow">Conservative</option>
+                      <option value="moderate">Moderate</option>
+                      <option value="aggressive">Aggressive</option>
                     </select>
                   </label>
                 </div>
@@ -903,7 +1131,7 @@ export default function CalorieTracker({ initialToday, initialProfile, showOnboa
                     disabled={onboardingGoalLoading}
                     className="h-11 flex-1 rounded-xl bg-sky-600 px-4 text-sm font-semibold text-white transition hover:bg-sky-500 disabled:opacity-50"
                   >
-                    {onboardingGoalLoading ? "Estimating..." : "Estimate with AI"}
+                    {onboardingGoalLoading ? "Calculating..." : "Calculate Target"}
                   </button>
                   <button
                     type="button"
@@ -918,16 +1146,14 @@ export default function CalorieTracker({ initialToday, initialProfile, showOnboa
                 {onboardingGoalEstimate && (
                   <div className="mt-4 rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
                     <p className="text-sm font-semibold text-zinc-900">
-                      Recommended daily target: {onboardingGoalEstimate.recommendedDailyGoal.toLocaleString()} cal
+                      Base metabolic calories: {onboardingGoalEstimate.estimatedBmr.toLocaleString()} cal
                     </p>
                     <p className="mt-1 text-sm text-zinc-600">
-                      Estimated maintenance: {onboardingGoalEstimate.maintenanceCalories.toLocaleString()} cal
+                      Goal adjustment: {onboardingGoalEstimate.calorieAdjustment >= 0 ? "+" : ""}{onboardingGoalEstimate.calorieAdjustment.toLocaleString()} cal
                     </p>
-                    <ul className="mt-3 space-y-1 text-sm text-zinc-700">
-                      {onboardingGoalEstimate.reasoning.map((reason, index) => (
-                        <li key={`${reason}-${index}`}>• {reason}</li>
-                      ))}
-                    </ul>
+                    <p className="mt-1 text-sm text-zinc-600">
+                      Daily target: {onboardingGoalEstimate.recommendedDailyCalories.toLocaleString()} cal
+                    </p>
                     <p className="mt-3 text-xs text-zinc-500">{onboardingGoalEstimate.disclaimer}</p>
                     <button
                       type="button"
@@ -935,7 +1161,7 @@ export default function CalorieTracker({ initialToday, initialProfile, showOnboa
                       disabled={onboardingGoalLoading}
                       className="mt-3 h-11 w-full rounded-xl bg-emerald-600 px-4 text-sm font-semibold text-white transition hover:bg-emerald-500 disabled:opacity-50"
                     >
-                      Use this as my daily goal
+                      Use this target
                     </button>
                   </div>
                 )}
@@ -1001,6 +1227,7 @@ export default function CalorieTracker({ initialToday, initialProfile, showOnboa
               <p className="mb-4 text-sm text-zinc-600">
                 {today.consumed.toLocaleString()} consumed of {today.dailyGoal.toLocaleString()} goal
               </p>
+              <p className="mb-4 text-sm text-zinc-600">{today.burned.toLocaleString()} exercise calories added back</p>
 
               <div className="h-3 overflow-hidden rounded-full bg-zinc-100">
                 <div
@@ -1152,11 +1379,10 @@ export default function CalorieTracker({ initialToday, initialProfile, showOnboa
                   )}
                 </div>
               )}
-            </section>
 
-            <section className="rounded-2xl border border-white/90 bg-white/95 p-5 shadow-[0_16px_40px_-24px_rgba(15,23,42,0.4)]">
-              <h2 className="text-base font-semibold">Today&apos;s Log</h2>
-              <ul className="mt-4 space-y-2">
+              <div className="mt-6 border-t border-zinc-200 pt-5">
+                <h2 className="text-base font-semibold">Today&apos;s Log</h2>
+                <ul className="mt-4 space-y-2">
                 {today.entries.length === 0 ? (
                   <li className="rounded-xl border border-dashed border-zinc-300 px-3 py-6 text-center text-sm text-zinc-500">
                     No entries yet.
@@ -1165,35 +1391,167 @@ export default function CalorieTracker({ initialToday, initialProfile, showOnboa
                   today.entries.map((entry: CalorieEntry) => (
                     <li
                       key={entry.id}
-                      className="flex items-center justify-between gap-3 rounded-xl border border-zinc-200 bg-white px-3 py-3"
+                      className="rounded-xl border border-zinc-200 bg-white px-3 py-3"
                     >
-                      <div>
-                        <p className="text-sm font-medium text-zinc-900">{entry.foodName}</p>
-                        <p className="text-xs text-zinc-500">
-                          {entry.source === "ai" ? "AI estimate" : "Manual"}
-                          {entry.category && (
-                            <span className="ml-1.5 inline-block rounded-md bg-zinc-100 px-1.5 py-0.5 text-xs font-medium capitalize text-zinc-600">
-                              {entry.category}
-                            </span>
-                          )}
-                        </p>
-                      </div>
-                      <div className="flex items-center gap-3">
-                        <p className="text-sm font-semibold text-zinc-900">{entry.calories} cal</p>
-                        <button
-                          type="button"
-                          onClick={() => deleteEntry(entry.id)}
-                          aria-label="Delete entry"
-                          disabled={todayLoading}
-                          className="grid h-8 w-8 place-items-center rounded-full border border-zinc-200 text-xs font-semibold text-zinc-600 transition hover:bg-zinc-100 disabled:opacity-50"
-                        >
-                          X
-                        </button>
-                      </div>
+                      {editingEntryId === entry.id ? (
+                        <div className="grid gap-2">
+                          <input
+                            value={entryEditForm.foodName}
+                            onChange={(event) =>
+                              setEntryEditForm((prev) => ({ ...prev, foodName: event.target.value }))
+                            }
+                            placeholder="Title"
+                            className="h-10 rounded-xl border border-zinc-200 px-3 text-sm outline-none ring-sky-200 transition focus:ring"
+                          />
+                          <div className="grid grid-cols-2 gap-2">
+                            <select
+                              value={entryEditForm.category}
+                              onChange={(event) =>
+                                setEntryEditForm((prev) => ({
+                                  ...prev,
+                                  category: event.target.value as MealCategory | "",
+                                }))
+                              }
+                              className="h-10 rounded-xl border border-zinc-200 bg-white px-3 text-sm outline-none ring-sky-200 transition focus:ring"
+                            >
+                              <option value="">No category</option>
+                              <option value="breakfast">Breakfast</option>
+                              <option value="lunch">Lunch</option>
+                              <option value="dinner">Dinner</option>
+                              <option value="snack">Snack</option>
+                            </select>
+                            <input
+                              inputMode="numeric"
+                              value={entryEditForm.calories}
+                              onChange={(event) =>
+                                setEntryEditForm((prev) => ({ ...prev, calories: event.target.value }))
+                              }
+                              placeholder="Calories"
+                              className="h-10 rounded-xl border border-zinc-200 px-3 text-sm outline-none ring-sky-200 transition focus:ring"
+                            />
+                          </div>
+                          <div className="flex justify-end gap-2">
+                            <button
+                              type="button"
+                              onClick={cancelEditEntry}
+                              disabled={todayLoading}
+                              className="h-9 rounded-xl border border-zinc-200 bg-white px-3 text-xs font-semibold text-zinc-700 hover:bg-zinc-100 disabled:opacity-50"
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => saveEntryEdit(entry.id)}
+                              disabled={todayLoading}
+                              className="h-9 rounded-xl bg-sky-600 px-3 text-xs font-semibold text-white hover:bg-sky-500 disabled:opacity-50"
+                            >
+                              Save
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="flex items-center justify-between gap-3">
+                          <div>
+                            <p className="text-sm font-medium text-zinc-900">{entry.foodName}</p>
+                            {(entry.source === "ai" || entry.category) && (
+                              <p className="text-xs text-zinc-500">
+                                {entry.source === "ai" ? "AI estimate" : ""}
+                                {entry.category && (
+                                  <span className="ml-1.5 inline-block rounded-md bg-zinc-100 px-1.5 py-0.5 text-xs font-medium capitalize text-zinc-600">
+                                    {entry.category}
+                                  </span>
+                                )}
+                              </p>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <p className="text-sm font-semibold text-zinc-900">{entry.calories} cal</p>
+                            <button
+                              type="button"
+                              onClick={() => startEditEntry(entry)}
+                              aria-label="Edit entry"
+                              disabled={todayLoading}
+                              className="h-8 rounded-xl border border-zinc-200 px-2.5 text-xs font-semibold text-zinc-600 transition hover:bg-zinc-100 disabled:opacity-50"
+                            >
+                              Edit
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => deleteEntry(entry.id)}
+                              aria-label="Delete entry"
+                              disabled={todayLoading}
+                              className="grid h-8 w-8 place-items-center rounded-full border border-zinc-200 text-xs font-semibold text-zinc-600 transition hover:bg-zinc-100 disabled:opacity-50"
+                            >
+                              X
+                            </button>
+                          </div>
+                        </div>
+                      )}
                     </li>
                   ))
                 )}
-              </ul>
+                </ul>
+              </div>
+            </section>
+            <section className="rounded-2xl border border-white/90 bg-white/95 p-5 shadow-[0_16px_40px_-24px_rgba(15,23,42,0.4)]">
+              <h2 className="text-base font-semibold">Daily Exercise</h2>
+              <p className="mt-1 text-sm text-zinc-600">Burned today: {today.burned.toLocaleString()} cal</p>
+
+              <div className="mt-4 grid gap-3">
+                <input
+                  value={exerciseDescription}
+                  onChange={(event) => setExerciseDescription(event.target.value)}
+                  placeholder="Exercise description (optional)"
+                  className="h-11 rounded-xl border border-zinc-200 px-3 text-base outline-none ring-sky-200 transition focus:ring"
+                />
+                <input
+                  inputMode="numeric"
+                  value={exerciseCaloriesBurned}
+                  onChange={(event) => setExerciseCaloriesBurned(event.target.value)}
+                  placeholder="Calories burned"
+                  className="h-11 rounded-xl border border-zinc-200 px-3 text-base outline-none ring-sky-200 transition focus:ring"
+                />
+                <button
+                  type="button"
+                  onClick={addExercise}
+                  disabled={todayLoading}
+                  className="h-11 rounded-xl bg-emerald-600 px-4 text-sm font-semibold text-white transition hover:bg-emerald-500 disabled:opacity-50"
+                >
+                  Add Exercise
+                </button>
+              </div>
+
+              <div className="mt-6 border-t border-zinc-200 pt-5">
+                <h3 className="text-base font-semibold">Exercise Log</h3>
+                <ul className="mt-4 space-y-2">
+                  {today.exercises.length === 0 ? (
+                    <li className="rounded-xl border border-dashed border-zinc-300 px-3 py-6 text-center text-sm text-zinc-500">
+                      No exercise entries yet.
+                    </li>
+                  ) : (
+                    today.exercises.map((exercise: ExerciseEntry) => (
+                      <li
+                        key={exercise.id}
+                        className="flex items-center justify-between gap-3 rounded-xl border border-zinc-200 bg-white px-3 py-3"
+                      >
+                        <p className="text-sm font-medium text-zinc-900">{exercise.description}</p>
+                        <div className="flex items-center gap-2">
+                          <p className="text-sm font-semibold text-emerald-700">+{exercise.caloriesBurned} cal</p>
+                          <button
+                            type="button"
+                            onClick={() => deleteExercise(exercise.id)}
+                            aria-label="Delete exercise entry"
+                            disabled={todayLoading}
+                            className="grid h-8 w-8 place-items-center rounded-full border border-zinc-200 text-xs font-semibold text-zinc-600 transition hover:bg-zinc-100 disabled:opacity-50"
+                          >
+                            X
+                          </button>
+                        </div>
+                      </li>
+                    ))
+                  )}
+                </ul>
+              </div>
             </section>
 
             {todayError && (
@@ -1399,7 +1757,7 @@ export default function CalorieTracker({ initialToday, initialProfile, showOnboa
                           </button>
                           <button
                             type="button"
-                            onClick={() => addRecipeToToday(recipe.id)}
+                            onClick={() => setRecipeMealPickerId(recipe.id)}
                             className="h-11 min-w-11 rounded-xl bg-emerald-600 px-4 text-sm font-semibold text-white hover:bg-emerald-500"
                           >
                             {recentlyAddedRecipeId === recipe.id ? "✓" : "Add"}
@@ -1411,6 +1769,44 @@ export default function CalorieTracker({ initialToday, initialProfile, showOnboa
                 )}
               </ul>
             </section>
+
+            {recipeForMealPicker && (
+              <div
+                className="fixed inset-0 z-60 flex items-center justify-center bg-zinc-900/45 px-4 py-6"
+                onClick={() => setRecipeMealPickerId(null)}
+              >
+                <section
+                  role="dialog"
+                  aria-modal="true"
+                  aria-label="Assign recipe to meal"
+                  className="w-full max-w-sm rounded-2xl border border-white/90 bg-white/98 p-5 shadow-[0_24px_60px_-30px_rgba(15,23,42,0.55)]"
+                  onClick={(event) => event.stopPropagation()}
+                >
+                  <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Assign to meal</p>
+                  <h3 className="mt-1 text-base font-semibold text-zinc-900">{recipeForMealPicker.name}</h3>
+                  <div className="mt-3 grid grid-cols-2 gap-2">
+                    {(["breakfast", "lunch", "dinner", "snack"] as MealCategory[]).map((cat) => (
+                      <button
+                        key={`modal-${recipeForMealPicker.id}-${cat}`}
+                        type="button"
+                        onClick={() => addRecipeToToday(recipeForMealPicker.id, cat)}
+                        disabled={recipesLoading}
+                        className="h-10 rounded-xl border border-zinc-200 bg-white text-sm font-semibold capitalize text-zinc-700 transition hover:bg-zinc-100 disabled:opacity-50"
+                      >
+                        {cat}
+                      </button>
+                    ))}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setRecipeMealPickerId(null)}
+                    className="mt-3 h-10 w-full rounded-xl border border-zinc-200 bg-white text-sm font-semibold text-zinc-600 hover:bg-zinc-100"
+                  >
+                    Cancel
+                  </button>
+                </section>
+              </div>
+            )}
 
             {recipesError && (
               <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-3 text-sm text-rose-700">{recipesError}</div>
@@ -1535,7 +1931,7 @@ export default function CalorieTracker({ initialToday, initialProfile, showOnboa
 
         {isSettingsOpen && (
           <div className="fixed inset-0 z-40 flex items-center justify-center bg-zinc-950/30 px-4">
-            <div className="w-full max-w-sm rounded-3xl border border-white/80 bg-white p-5 shadow-2xl">
+            <div className="max-h-[90vh] w-full max-w-xl overflow-y-auto rounded-3xl border border-white/80 bg-white p-5 shadow-2xl">
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <h2 className="text-lg font-semibold text-zinc-900">Settings</h2>
@@ -1554,6 +1950,137 @@ export default function CalorieTracker({ initialToday, initialProfile, showOnboa
               <div className="mt-4 rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
                 <p className="text-sm font-semibold text-zinc-900">{initialProfile.displayName}</p>
                 <p className="mt-1 text-sm text-zinc-600">{initialProfile.email}</p>
+                <p className="mt-2 text-sm text-zinc-600">Current daily goal: {today.dailyGoal.toLocaleString()} cal</p>
+              </div>
+
+              <div className="mt-4 rounded-2xl border border-sky-200 bg-sky-50 p-4">
+                <button
+                  type="button"
+                  onClick={toggleRecalculate}
+                  disabled={settingsProfileLoading}
+                  className="flex w-full items-center justify-between gap-3 transition hover:opacity-75 disabled:opacity-50"
+                >
+                  <div className="flex flex-col items-start">
+                    <p className="text-sm font-semibold text-zinc-900">Recalculate daily target</p>
+                    <p className="mt-1 text-sm text-zinc-600">Update your calorie goal based on your profile and strategy</p>
+                  </div>
+                  <span className="text-lg text-zinc-600">{isRecalculateExpanded ? "−" : "+"}</span>
+                </button>
+
+                {isRecalculateExpanded && (
+                  <>
+                    <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                      <label className="grid gap-1 text-xs font-semibold uppercase tracking-wide text-zinc-500">
+                        Sex
+                        <select
+                          value={onboardingGoalForm.sex}
+                          onChange={(event) =>
+                            setOnboardingGoalForm((prev) => ({ ...prev, sex: event.target.value as GoalSex }))
+                          }
+                          className="h-11 rounded-xl border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-800 outline-none ring-sky-200 transition focus:ring"
+                        >
+                          <option value="female">Female</option>
+                          <option value="male">Male</option>
+                        </select>
+                      </label>
+
+                      <label className="grid gap-1 text-xs font-semibold uppercase tracking-wide text-zinc-500">
+                        Age
+                        <input
+                          inputMode="numeric"
+                          value={onboardingGoalForm.age}
+                          onChange={(event) => setOnboardingGoalForm((prev) => ({ ...prev, age: event.target.value }))}
+                          className="h-11 rounded-xl border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-800 outline-none ring-sky-200 transition focus:ring"
+                        />
+                      </label>
+
+                      <label className="grid gap-1 text-xs font-semibold uppercase tracking-wide text-zinc-500">
+                        Height (inches)
+                        <input
+                          inputMode="numeric"
+                          value={onboardingGoalForm.heightInches}
+                          onChange={(event) => setOnboardingGoalForm((prev) => ({ ...prev, heightInches: event.target.value }))}
+                          className="h-11 rounded-xl border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-800 outline-none ring-sky-200 transition focus:ring"
+                        />
+                      </label>
+
+                      <label className="grid gap-1 text-xs font-semibold uppercase tracking-wide text-zinc-500">
+                        Weight (lbs)
+                        <input
+                          inputMode="numeric"
+                          value={onboardingGoalForm.weightLbs}
+                          onChange={(event) => setOnboardingGoalForm((prev) => ({ ...prev, weightLbs: event.target.value }))}
+                          className="h-11 rounded-xl border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-800 outline-none ring-sky-200 transition focus:ring"
+                        />
+                      </label>
+
+                      <label className="grid gap-1 text-xs font-semibold uppercase tracking-wide text-zinc-500">
+                        Goal
+                        <select
+                          value={onboardingGoalForm.goalType}
+                          onChange={(event) =>
+                            setOnboardingGoalForm((prev) => ({ ...prev, goalType: event.target.value as GoalType }))
+                          }
+                          className="h-11 rounded-xl border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-800 outline-none ring-sky-200 transition focus:ring"
+                        >
+                          <option value="lose">Lose</option>
+                          <option value="maintain">Maintain</option>
+                          <option value="gain">Gain</option>
+                        </select>
+                      </label>
+
+                      <label className="grid gap-1 text-xs font-semibold uppercase tracking-wide text-zinc-500">
+                        Strategy
+                        <select
+                          value={onboardingGoalForm.goalStrategy}
+                          onChange={(event) =>
+                            setOnboardingGoalForm((prev) => ({ ...prev, goalStrategy: event.target.value as GoalStrategy }))
+                          }
+                          className="h-11 rounded-xl border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-800 outline-none ring-sky-200 transition focus:ring"
+                        >
+                          <option value="slow">Conservative</option>
+                          <option value="moderate">Moderate</option>
+                          <option value="aggressive">Aggressive</option>
+                        </select>
+                      </label>
+                    </div>
+
+                    <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+                      <button
+                        type="button"
+                        onClick={estimateSettingsBaseMetabolicGoal}
+                        disabled={settingsGoalLoading || isAccountDeleting}
+                        className="h-11 flex-1 rounded-xl bg-sky-600 px-4 text-sm font-semibold text-white transition hover:bg-sky-500 disabled:opacity-50"
+                      >
+                        {settingsGoalLoading ? "Calculating..." : "Calculate Target"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={applySettingsBaseMetabolicGoal}
+                        disabled={settingsGoalLoading || isAccountDeleting || !settingsBaseEstimate}
+                        className="h-11 flex-1 rounded-xl bg-emerald-600 px-4 text-sm font-semibold text-white transition hover:bg-emerald-500 disabled:opacity-50"
+                      >
+                        Use This Target
+                      </button>
+                    </div>
+
+                    {settingsBaseEstimate && (
+                      <div className="mt-3 rounded-xl border border-zinc-200 bg-white p-3">
+                        <p className="text-sm text-zinc-900">Base metabolic calories: {settingsBaseEstimate.estimatedBmr.toLocaleString()} cal/day</p>
+                        <p className="mt-1 text-sm text-zinc-600">Goal adjustment: {settingsBaseEstimate.calorieAdjustment >= 0 ? "+" : ""}{settingsBaseEstimate.calorieAdjustment.toLocaleString()} cal/day</p>
+                        <p className="mt-2 text-xs text-zinc-500">Your daily caloric need accounting for your goal and strategy:</p>
+                        <p className="mt-1 text-sm font-semibold text-zinc-900">Daily target: {settingsBaseEstimate.recommendedDailyCalories.toLocaleString()} cal/day</p>
+                        <p className="mt-1 text-xs text-zinc-500">{settingsBaseEstimate.disclaimer}</p>
+                      </div>
+                    )}
+
+                    {settingsError && (
+                      <div className="mt-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-3 text-sm text-rose-700">
+                        {settingsError}
+                      </div>
+                    )}
+                  </>
+                )}
               </div>
 
               <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-4">
@@ -1598,6 +2125,9 @@ export default function CalorieTracker({ initialToday, initialProfile, showOnboa
 
               {settingsError && (
                 <div className="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-3 py-3 text-sm text-rose-700">{settingsError}</div>
+              )}
+              {settingsSuccess && (
+                <div className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-3 text-sm text-emerald-700">{settingsSuccess}</div>
               )}
             </div>
           </div>

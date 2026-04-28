@@ -24,11 +24,11 @@ function parseInput(body: CalculatePayload): OnboardingCalculationInput | null {
   const sex = parseOnboardingSex(body.sex);
   const heightInches = toBoundedWholeNumber(body.heightInches, 48, 90);
   const weightLbs = toBoundedWholeNumber(body.weightLbs, 70, 700);
-  const activityLevel = parseOnboardingActivityLevel(body.activityLevel);
-  const goalType = parseOnboardingGoalType(body.goalType);
-  const goalPace = parseOnboardingGoalPace(body.goalPace);
+  const activityLevel = parseOnboardingActivityLevel(body.activityLevel) ?? "sedentary";
+  const goalType = parseOnboardingGoalType(body.goalType) ?? "maintain";
+  const goalPace = parseOnboardingGoalPace(body.goalPace) ?? "moderate";
 
-  if (!age || !sex || !heightInches || !weightLbs || !activityLevel || !goalType || !goalPace) {
+  if (!age || !sex || !heightInches || !weightLbs) {
     return null;
   }
 
@@ -51,7 +51,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         {
           error:
-            "Invalid payload. Provide age, sex, heightInches, weightLbs, activityLevel, goalType, and goalPace.",
+            "Invalid payload. Provide age, sex, heightInches, and weightLbs.",
         },
         { status: 400 },
       );

@@ -8,7 +8,7 @@ import type {
 } from "@/lib/onboarding/types";
 
 const ESTIMATE_DISCLAIMER =
-  "This is an estimate, not medical advice. Adjust based on progress and consult a professional if needed.";
+  "This is an estimate of base metabolic calories (BMR), not medical advice. Strategy adds a planned deficit or surplus; adjust with progress.";
 
 function poundsToKilograms(weightLbs: number): number {
   return weightLbs * 0.45359237;
@@ -16,34 +16,6 @@ function poundsToKilograms(weightLbs: number): number {
 
 function inchesToCentimeters(heightInches: number): number {
   return heightInches * 2.54;
-}
-
-function activityMultiplier(activityLevel: OnboardingActivityLevel): number {
-  switch (activityLevel) {
-    case "sedentary":
-      return 1.2;
-    case "light":
-      return 1.375;
-    case "moderate":
-      return 1.55;
-    case "very":
-      return 1.725;
-    default:
-      return 1.2;
-  }
-}
-
-function goalAdjustment(goalType: OnboardingGoalType, goalPace: OnboardingGoalPace): number {
-  if (goalType === "maintain") {
-    return 0;
-  }
-
-  const base = goalPace === "slow" ? 250 : goalPace === "moderate" ? 500 : 750;
-  return goalType === "lose" ? -base : base;
-}
-
-function safeDailyFloor(sex: OnboardingSex): number {
-  return sex === "female" ? 1200 : 1400;
 }
 
 export function parseOnboardingSex(value: unknown): OnboardingSex | null {
@@ -71,23 +43,65 @@ export function toBoundedWholeNumber(value: unknown, min: number, max: number): 
   return parsed;
 }
 
+function getStrategyMagnitude(goalPace: OnboardingGoalPace): number {
+  if (goalPace === "slow") {
+    return 200;
+  }
+
+  if (goalPace === "moderate") {
+    return 350;
+  }
+
+  return 500;
+}
+
+function goalAdjustment(goalType: OnboardingGoalType, goalPace: OnboardingGoalPace): number {
+  if (goalType === "maintain") {
+    return 0;
+  }
+
+  const magnitude = getStrategyMagnitude(goalPace);
+  return goalType === "lose" ? -magnitude : magnitude;
+}
+
+function getActivityMultiplier(activityLevel: OnboardingActivityLevel): number {
+  // Activity multipliers based on exercise frequency
+  // These convert BMR to TDEE (Total Daily Energy Expenditure)
+  if (activityLevel === "sedentary") {
+    return 1.2; // Little/no exercise
+  }
+
+  if (activityLevel === "light") {
+    return 1.375; // 1-3 days/week
+  }
+
+  if (activityLevel === "moderate") {
+    return 1.55; // 3-5 days/week
+  }
+
+  return 1.725; // 6-7 days/week (very active)
+}
+
 export function calculateOnboardingGoal(input: OnboardingCalculationInput): OnboardingCalculationResult {
   const weightKg = poundsToKilograms(input.weightLbs);
   const heightCm = inchesToCentimeters(input.heightInches);
 
   const base = 10 * weightKg + 6.25 * heightCm - 5 * input.age;
   const estimatedBmr = Math.round(input.sex === "male" ? base + 5 : base - 161);
-  const estimatedTdee = Math.round(estimatedBmr * activityMultiplier(input.activityLevel));
-  const recommendedDailyCalories = Math.max(
-    safeDailyFloor(input.sex),
-    estimatedTdee + goalAdjustment(input.goalType, input.goalPace),
-  );
+  
+  // Apply activity multiplier to get TDEE (maintenance calories with activity)
+  const activityMultiplier = getActivityMultiplier(input.activityLevel);
+  const estimatedTdee = Math.round(estimatedBmr * activityMultiplier);
+  
+  const calorieAdjustment = goalAdjustment(input.goalType, input.goalPace);
+  const recommendedDailyCalories = Math.max(1000, estimatedTdee + calorieAdjustment);
 
   return {
     estimatedBmr,
     estimatedTdee,
     maintenanceCalories: estimatedTdee,
     recommendedDailyCalories,
+    calorieAdjustment,
     goalType: input.goalType,
     goalPace: input.goalPace,
     disclaimer: ESTIMATE_DISCLAIMER,

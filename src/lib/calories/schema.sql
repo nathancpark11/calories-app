@@ -20,6 +20,18 @@ CREATE TABLE IF NOT EXISTS calorie_entries (
 CREATE INDEX IF NOT EXISTS idx_calorie_entries_user_date
   ON calorie_entries (user_id, entry_date);
 
+CREATE TABLE IF NOT EXISTS exercise_entries (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  description TEXT NOT NULL,
+  calories_burned INTEGER NOT NULL,
+  entry_date DATE NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_exercise_entries_user_date
+  ON exercise_entries (user_id, entry_date);
+
 CREATE TABLE IF NOT EXISTS recipes (
   id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL,

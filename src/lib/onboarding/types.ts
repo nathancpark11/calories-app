@@ -21,6 +21,7 @@ export type OnboardingCalculationResult = {
   estimatedTdee: number;
   maintenanceCalories: number;
   recommendedDailyCalories: number;
+  calorieAdjustment: number;
   goalType: OnboardingGoalType;
   goalPace: OnboardingGoalPace;
   disclaimer: string;

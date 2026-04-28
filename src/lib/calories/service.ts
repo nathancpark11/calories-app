@@ -4,6 +4,7 @@ import type {
   CalorieEntry,
   CalendarDayPayload,
   CalendarMonthPayload,
+  ExerciseEntry,
   MealCategory,
   Recipe,
   RecipeCreateInput,
@@ -21,18 +22,22 @@ const repository = getCalorieRepository();
 
 export async function getTodayPayload(userId: string, timeZone?: string): Promise<TodayPayload> {
   const entryDate = timeZone ? dateKeyForTimeZone(sanitizeTimeZone(timeZone)) : todayDateKey();
-  const [dailyGoal, entries] = await Promise.all([
+  const [dailyGoal, entries, exercises] = await Promise.all([
     repository.getDailyGoal(userId),
     repository.getEntriesByDate(userId, entryDate),
+    repository.getExerciseEntriesByDate(userId, entryDate),
   ]);
 
   const consumed = entries.reduce((sum, entry) => sum + entry.calories, 0);
+  const burned = exercises.reduce((sum, exercise) => sum + exercise.caloriesBurned, 0);
 
   return {
     dailyGoal,
     consumed,
-    remaining: dailyGoal - consumed,
+    burned,
+    remaining: dailyGoal - consumed + burned,
     entries,
+    exercises,
   };
 }
 
@@ -54,6 +59,16 @@ export async function addManualEntry(
 export async function confirmAIEntries(userId: string, items: AIEstimateItem[], timeZone?: string, category?: MealCategory) {
   const entryDate = timeZone ? dateKeyForTimeZone(sanitizeTimeZone(timeZone)) : undefined;
   return repository.createEntriesFromAI(userId, items, entryDate, category);
+}
+
+export async function editEntry(
+  userId: string,
+  entryId: string,
+  foodName: string,
+  calories: number,
+  category: MealCategory | null,
+) {
+  return repository.updateEntry(userId, entryId, { foodName, calories, category });
 }
 
 export async function removeEntry(userId: string, entryId: string) {
@@ -81,9 +96,10 @@ export async function addRecipeEntry(
   recipeId: string,
   servings: number,
   timeZone?: string,
+  category?: MealCategory,
 ): Promise<CalorieEntry | null> {
   const entryDate = timeZone ? dateKeyForTimeZone(sanitizeTimeZone(timeZone)) : undefined;
-  return repository.addRecipeToToday({ userId, recipeId, servings, entryDate });
+  return repository.addRecipeToToday({ userId, recipeId, servings, entryDate, category });
 }
 
 export async function getCalendarMonthPayload(userId: string, month: string): Promise<CalendarMonthPayload> {
@@ -95,19 +111,23 @@ export async function getCalendarMonthPayload(userId: string, month: string): Pr
 }
 
 export async function getCalendarDayPayload(userId: string, date: string): Promise<CalendarDayPayload> {
-  const [dailyGoal, entries] = await Promise.all([
+  const [dailyGoal, entries, exercises] = await Promise.all([
     repository.getDailyGoal(userId),
     repository.getEntriesByDate(userId, date),
+    repository.getExerciseEntriesByDate(userId, date),
   ]);
 
   const consumed = entries.reduce((sum, entry) => sum + entry.calories, 0);
+  const burned = exercises.reduce((sum, exercise) => sum + exercise.caloriesBurned, 0);
   return {
     date,
     dailyGoal,
     consumed,
-    remaining: dailyGoal - consumed,
+    burned,
+    remaining: dailyGoal - consumed + burned,
     status: getCalendarStatus(consumed, dailyGoal, entries.length > 0),
     entries,
+    exercises,
   };
 }
 
@@ -120,6 +140,24 @@ export async function getMonthForTimeZone(timeZone?: string): Promise<string> {
 
 export function getMonthDateRange(month: string) {
   return monthStartEnd(month);
+}
+
+export async function addExerciseEntry(
+  userId: string,
+  description: string,
+  caloriesBurned: number,
+  timeZone?: string,
+): Promise<ExerciseEntry> {
+  const entryDate = timeZone ? dateKeyForTimeZone(sanitizeTimeZone(timeZone)) : undefined;
+  return repository.createExerciseEntry(userId, description, caloriesBurned, entryDate);
+}
+
+export async function removeExerciseEntry(userId: string, entryId: string): Promise<boolean> {
+  return repository.deleteExerciseEntry(userId, entryId);
+}
+
+export async function getExerciseEntriesByDate(userId: string, date: string): Promise<ExerciseEntry[]> {
+  return repository.getExerciseEntriesByDate(userId, date);
 }
 
 export async function deleteUserCalorieData(userId: string) {

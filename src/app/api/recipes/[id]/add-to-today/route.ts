@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getRequestContext, withUserCookie } from "@/lib/calories/request-context";
 import { addRecipeEntry } from "@/lib/calories/service";
-import { toSafePositiveInt } from "@/lib/calories/utils";
+import { sanitizeMealCategory, toSafePositiveInt } from "@/lib/calories/utils";
 
 type RouteContext = {
   params: Promise<{ id: string }>;
@@ -15,10 +15,11 @@ export async function POST(request: NextRequest, context: RouteContext) {
       return NextResponse.json({ error: "Recipe id is required" }, { status: 400 });
     }
 
-    const body = (await request.json().catch(() => ({}))) as { servings?: unknown };
+    const body = (await request.json().catch(() => ({}))) as { servings?: unknown; category?: unknown };
     const servings = toSafePositiveInt(body.servings) ?? 1;
+    const category = sanitizeMealCategory(body.category) ?? undefined;
 
-    const entry = await addRecipeEntry(requestContext.userId, id, servings, requestContext.timeZone);
+    const entry = await addRecipeEntry(requestContext.userId, id, servings, requestContext.timeZone, category);
     if (!entry) {
       return NextResponse.json({ error: "Recipe not found" }, { status: 404 });
     }

@@ -7,6 +7,7 @@ import type {
   CalendarMonthDay,
   DailySettings,
   EntrySource,
+  ExerciseEntry,
   MealCategory,
   Recipe,
   RecipeCreateInput,
@@ -22,11 +23,18 @@ type CreateEntryInput = {
   category?: MealCategory;
 };
 
+type UpdateEntryInput = {
+  foodName: string;
+  calories: number;
+  category: MealCategory | null;
+};
+
 type RecipeAddToTodayInput = {
   userId: string;
   recipeId: string;
   servings: number;
   entryDate?: string;
+  category?: MealCategory;
 };
 
 type CalorieRepository = {
@@ -36,7 +44,11 @@ type CalorieRepository = {
   getEntriesByDateRange: (userId: string, startDate: string, endDate: string) => Promise<CalorieEntry[]>;
   createEntry: (input: CreateEntryInput) => Promise<CalorieEntry>;
   createEntriesFromAI: (userId: string, items: AIEstimateItem[], entryDate?: string, category?: MealCategory) => Promise<CalorieEntry[]>;
+  updateEntry: (userId: string, id: string, input: UpdateEntryInput) => Promise<CalorieEntry | null>;
   deleteEntry: (userId: string, id: string) => Promise<boolean>;
+  getExerciseEntriesByDate: (userId: string, entryDate: string) => Promise<ExerciseEntry[]>;
+  createExerciseEntry: (userId: string, description: string, caloriesBurned: number, entryDate?: string) => Promise<ExerciseEntry>;
+  deleteExerciseEntry: (userId: string, id: string) => Promise<boolean>;
   getRecipes: (userId: string, search?: string) => Promise<Recipe[]>;
   createRecipe: (userId: string, input: RecipeCreateInput) => Promise<Recipe>;
   updateRecipe: (userId: string, recipeId: string, input: RecipeCreateInput) => Promise<Recipe | null>;
@@ -48,6 +60,7 @@ type CalorieRepository = {
 
 type MockState = {
   entries: CalorieEntry[];
+  exercises: ExerciseEntry[];
   recipes: Recipe[];
 };
 
@@ -89,10 +102,22 @@ function toRecipe(row: Record<string, unknown>): Recipe {
   };
 }
 
+function toExerciseEntry(row: Record<string, unknown>): ExerciseEntry {
+  return {
+    id: String(row.id),
+    userId: String(row.user_id),
+    description: String(row.description),
+    caloriesBurned: Number(row.calories_burned),
+    entryDate: String(row.entry_date),
+    createdAt: new Date(String(row.created_at)).toISOString(),
+  };
+}
+
 function getMockState(): MockState {
   if (!globalThis.__calorieMockState) {
     globalThis.__calorieMockState = {
       entries: [],
+      exercises: [],
       recipes: [],
     };
   }
@@ -179,11 +204,58 @@ const mockRepository: CalorieRepository = {
     return created;
   },
 
+  async updateEntry(userId, id, input) {
+    const state = getMockState();
+    const idx = state.entries.findIndex((entry) => entry.userId === userId && entry.id === id);
+    if (idx < 0) {
+      return null;
+    }
+
+    const next: CalorieEntry = {
+      ...state.entries[idx],
+      foodName: input.foodName,
+      calories: input.calories,
+      category: input.category,
+    };
+
+    state.entries[idx] = next;
+    return next;
+  },
+
   async deleteEntry(userId, id) {
     const state = getMockState();
     const before = state.entries.length;
     state.entries = state.entries.filter((entry) => !(entry.userId === userId && entry.id === id));
     return state.entries.length < before;
+  },
+
+  async getExerciseEntriesByDate(userId, entryDate) {
+    const state = getMockState();
+    return state.exercises
+      .filter((entry) => entry.userId === userId && entry.entryDate === entryDate)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  },
+
+  async createExerciseEntry(userId, description, caloriesBurned, entryDate = todayDateKey()) {
+    const state = getMockState();
+    const created: ExerciseEntry = {
+      id: randomUUID(),
+      userId,
+      description,
+      caloriesBurned,
+      entryDate,
+      createdAt: new Date().toISOString(),
+    };
+
+    state.exercises.push(created);
+    return created;
+  },
+
+  async deleteExerciseEntry(userId, id) {
+    const state = getMockState();
+    const before = state.exercises.length;
+    state.exercises = state.exercises.filter((entry) => !(entry.userId === userId && entry.id === id));
+    return state.exercises.length < before;
   },
 
   async getRecipes(userId, search) {
@@ -258,6 +330,7 @@ const mockRepository: CalorieRepository = {
       calories: recipe.caloriesPerServing * servings,
       source: "manual",
       entryDate: input.entryDate,
+      category: input.category,
     });
   },
 
@@ -287,6 +360,7 @@ const mockRepository: CalorieRepository = {
   async deleteUserData(userId) {
     const state = getMockState();
     state.entries = state.entries.filter((entry) => entry.userId !== userId);
+    state.exercises = state.exercises.filter((entry) => entry.userId !== userId);
     state.recipes = state.recipes.filter((recipe) => recipe.userId !== userId);
   },
 };
@@ -331,6 +405,17 @@ function isMissingCategoryColumnError(error: unknown): boolean {
   );
 }
 
+function isMissingTableError(error: unknown): boolean {
+  const dbError = error as DbLikeError;
+  const message = (dbError.message ?? "").toLowerCase();
+  const causeMessage = (dbError.cause?.message ?? "").toLowerCase();
+
+  return (
+    message.includes("relation") && message.includes("does not exist") ||
+    causeMessage.includes("relation") && causeMessage.includes("does not exist")
+  );
+}
+
 async function withConnectionFallback<T>(operation: () => Promise<T>, fallback: () => Promise<T>): Promise<T> {
   try {
     return await operation();
@@ -340,7 +425,7 @@ async function withConnectionFallback<T>(operation: () => Promise<T>, fallback: 
       return fallback();
     }
 
-    if (isMissingCategoryColumnError(error)) {
+    if (isMissingCategoryColumnError(error) || isMissingTableError(error)) {
       resetCalorieSchemaCache();
       await ensureNeonTables();
       return operation();
@@ -395,9 +480,21 @@ async function ensureNeonTables() {
         )
       `;
 
+      await sql`
+        CREATE TABLE IF NOT EXISTS exercise_entries (
+          id TEXT PRIMARY KEY,
+          user_id TEXT NOT NULL,
+          description TEXT NOT NULL,
+          calories_burned INTEGER NOT NULL,
+          entry_date DATE NOT NULL,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `;
+
       await sql`CREATE INDEX IF NOT EXISTS idx_calorie_entries_user_date ON calorie_entries (user_id, entry_date)`;
       await sql`ALTER TABLE calorie_entries ADD COLUMN IF NOT EXISTS category TEXT NULL`;
       await sql`CREATE INDEX IF NOT EXISTS idx_recipes_user_updated ON recipes (user_id, updated_at DESC)`;
+      await sql`CREATE INDEX IF NOT EXISTS idx_exercise_entries_user_date ON exercise_entries (user_id, entry_date)`;
     })();
   }
 
@@ -499,6 +596,32 @@ const neonRepository: CalorieRepository = {
     }, () => mockRepository.createEntriesFromAI(userId, items, entryDate, category));
   },
 
+  async updateEntry(userId, id, input) {
+    const sql = getSqlClient();
+    if (!sql) {
+      return mockRepository.updateEntry(userId, id, input);
+    }
+
+    return withConnectionFallback(async () => {
+      await ensureNeonTables();
+      const rows = await sql`
+        UPDATE calorie_entries
+        SET
+          food_name = ${input.foodName},
+          calories = ${input.calories},
+          category = ${input.category}
+        WHERE id = ${id} AND user_id = ${userId}
+        RETURNING id, user_id, food_name, calories, source, entry_date, category, created_at
+      `;
+
+      if (rows.length === 0) {
+        return null;
+      }
+
+      return toCalorieEntry(rows[0] as Record<string, unknown>);
+    }, () => mockRepository.updateEntry(userId, id, input));
+  },
+
   async deleteEntry(userId, id) {
     const sql = getSqlClient();
     if (!sql) {
@@ -515,6 +638,66 @@ const neonRepository: CalorieRepository = {
 
       return rows.length > 0;
     }, () => mockRepository.deleteEntry(userId, id));
+  },
+
+  async getExerciseEntriesByDate(userId, entryDate) {
+    const sql = getSqlClient();
+    if (!sql) {
+      return mockRepository.getExerciseEntriesByDate(userId, entryDate);
+    }
+
+    return withConnectionFallback(async () => {
+      await ensureNeonTables();
+      const rows = await sql`
+        SELECT id, user_id, description, calories_burned, entry_date, created_at
+        FROM exercise_entries
+        WHERE user_id = ${userId} AND entry_date = ${entryDate}
+        ORDER BY created_at DESC
+      `;
+
+      return rows.map((row) => toExerciseEntry(row as Record<string, unknown>));
+    }, () => mockRepository.getExerciseEntriesByDate(userId, entryDate));
+  },
+
+  async createExerciseEntry(userId, description, caloriesBurned, entryDate = todayDateKey()) {
+    const sql = getSqlClient();
+    if (!sql) {
+      return mockRepository.createExerciseEntry(userId, description, caloriesBurned, entryDate);
+    }
+
+    return withConnectionFallback(async () => {
+      await ensureNeonTables();
+      const id = randomUUID();
+      const rows = await sql`
+        INSERT INTO exercise_entries (id, user_id, description, calories_burned, entry_date, created_at)
+        VALUES (${id}, ${userId}, ${description}, ${caloriesBurned}, ${entryDate}, NOW())
+        RETURNING id, user_id, description, calories_burned, entry_date, created_at
+      `;
+
+      if (rows.length === 0) {
+        throw new Error("Failed to create exercise entry");
+      }
+
+      return toExerciseEntry(rows[0] as Record<string, unknown>);
+    }, () => mockRepository.createExerciseEntry(userId, description, caloriesBurned, entryDate));
+  },
+
+  async deleteExerciseEntry(userId, id) {
+    const sql = getSqlClient();
+    if (!sql) {
+      return mockRepository.deleteExerciseEntry(userId, id);
+    }
+
+    return withConnectionFallback(async () => {
+      await ensureNeonTables();
+      const rows = await sql`
+        DELETE FROM exercise_entries
+        WHERE id = ${id} AND user_id = ${userId}
+        RETURNING id
+      `;
+
+      return rows.length > 0;
+    }, () => mockRepository.deleteExerciseEntry(userId, id));
   },
 
   async getRecipes(userId, search) {
@@ -656,6 +839,7 @@ const neonRepository: CalorieRepository = {
         calories,
         source: "manual",
         entryDate: input.entryDate,
+        category: input.category,
       });
     }, () => mockRepository.addRecipeToToday(input));
   },
@@ -693,6 +877,10 @@ const neonRepository: CalorieRepository = {
       await ensureNeonTables();
       await sql`
         DELETE FROM calorie_entries
+        WHERE user_id = ${userId}
+      `;
+      await sql`
+        DELETE FROM exercise_entries
         WHERE user_id = ${userId}
       `;
       await sql`

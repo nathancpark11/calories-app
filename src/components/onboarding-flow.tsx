@@ -4,18 +4,16 @@ import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 
 type Sex = "female" | "male";
-type ActivityLevel = "sedentary" | "light" | "moderate" | "very";
 type GoalType = "lose" | "maintain" | "gain";
-type GoalPace = "slow" | "moderate" | "aggressive";
+type GoalStrategy = "slow" | "moderate" | "aggressive";
 
 type OnboardingForm = {
   age: string;
   sex: Sex;
   heightInches: string;
   weightLbs: string;
-  activityLevel: ActivityLevel;
   goalType: GoalType;
-  goalPace: GoalPace;
+  goalStrategy: GoalStrategy;
 };
 
 type CalculationResult = {
@@ -23,8 +21,9 @@ type CalculationResult = {
   estimatedTdee: number;
   maintenanceCalories: number;
   recommendedDailyCalories: number;
+  calorieAdjustment: number;
   goalType: GoalType;
-  goalPace: GoalPace;
+  goalPace: GoalStrategy;
   disclaimer: string;
 };
 
@@ -34,35 +33,27 @@ type ChoiceOption<TValue extends string> = {
   description: string;
 };
 
-const TOTAL_STEPS = 5;
+const TOTAL_STEPS = 4;
 
 const defaultForm: OnboardingForm = {
   age: "30",
   sex: "female",
   heightInches: "65",
   weightLbs: "150",
-  activityLevel: "moderate",
   goalType: "maintain",
-  goalPace: "moderate",
+  goalStrategy: "moderate",
 };
 
-const activityOptions: ChoiceOption<ActivityLevel>[] = [
-  { value: "sedentary", title: "Sedentary", description: "Mostly seated, little planned exercise." },
-  { value: "light", title: "Lightly active", description: "Some walking or light workouts 1-3 days/week." },
-  { value: "moderate", title: "Moderately active", description: "Regular workouts around 3-5 days/week." },
-  { value: "very", title: "Very active", description: "Frequent intense training or highly active work." },
-];
-
 const goalTypeOptions: ChoiceOption<GoalType>[] = [
-  { value: "lose", title: "Lose weight", description: "Create a calorie deficit." },
-  { value: "maintain", title: "Maintain weight", description: "Keep calories around maintenance." },
-  { value: "gain", title: "Gain weight", description: "Create a calorie surplus." },
+  { value: "lose", title: "Lose", description: "Apply a daily deficit from your base calories." },
+  { value: "maintain", title: "Maintain", description: "Keep intake at your base metabolic estimate." },
+  { value: "gain", title: "Gain", description: "Apply a daily surplus above your base calories." },
 ];
 
-const goalPaceOptions: ChoiceOption<GoalPace>[] = [
-  { value: "slow", title: "Slow", description: "Smaller change, easier to sustain." },
-  { value: "moderate", title: "Moderate", description: "Balanced pace for most people." },
-  { value: "aggressive", title: "Aggressive", description: "Largest change. Optional, not required." },
+const goalStrategyOptions: ChoiceOption<GoalStrategy>[] = [
+  { value: "slow", title: "Conservative", description: "Smallest daily adjustment." },
+  { value: "moderate", title: "Moderate", description: "Balanced adjustment for most users." },
+  { value: "aggressive", title: "Aggressive", description: "Largest daily adjustment." },
 ];
 
 async function postJson<T>(url: string, body: Record<string, unknown>): Promise<T> {
@@ -138,9 +129,9 @@ export default function OnboardingFlow() {
       }
     }
 
-    if (targetStep === 5 && form.goalType !== "maintain") {
-      if (form.goalPace !== "slow" && form.goalPace !== "moderate" && form.goalPace !== "aggressive") {
-        setError("Choose your desired pace.");
+    if (targetStep === 4) {
+      if (!form.goalType || !form.goalStrategy) {
+        setError("Choose a goal and strategy.");
         return false;
       }
     }
@@ -168,9 +159,8 @@ export default function OnboardingFlow() {
         sex: form.sex,
         heightInches,
         weightLbs,
-        activityLevel: form.activityLevel,
         goalType: form.goalType,
-        goalPace: form.goalPace,
+        goalPace: form.goalStrategy,
       });
 
       setResult(payload.result);
@@ -195,7 +185,7 @@ export default function OnboardingFlow() {
       return;
     }
 
-    if (nextStep === 5) {
+    if (nextStep === 4) {
       await calculateIfNeeded();
     }
 
@@ -232,9 +222,8 @@ export default function OnboardingFlow() {
         sex: form.sex,
         heightInches: Number.parseInt(form.heightInches, 10),
         weightLbs: Number.parseInt(form.weightLbs, 10),
-        activityLevel: form.activityLevel,
         goalType: form.goalType,
-        goalPace: form.goalPace,
+        goalPace: form.goalStrategy,
         dailyCalorieGoalOverride,
       });
 
@@ -251,7 +240,7 @@ export default function OnboardingFlow() {
       <main className="relative mx-auto flex min-h-screen w-full max-w-107.5 flex-col px-4 pb-10 pt-6">
         <section className="rounded-3xl border border-white/90 bg-white/95 p-5 shadow-[0_20px_44px_-24px_rgba(15,23,42,0.35)]">
           <p className="text-xs font-semibold uppercase tracking-[0.16em] text-sky-600">Onboarding</p>
-          <h1 className="mt-2 text-2xl font-bold tracking-tight">Set your daily calorie target</h1>
+          <h1 className="mt-2 text-2xl font-bold tracking-tight">Set your base calorie target</h1>
           <p className="mt-2 text-sm text-zinc-600">Step {step} of {TOTAL_STEPS}</p>
 
           <div className="mt-3 h-2 overflow-hidden rounded-full bg-zinc-100">
@@ -316,23 +305,6 @@ export default function OnboardingFlow() {
           )}
 
           {step === 3 && (
-            <div className="mt-5 grid gap-2">
-              <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Activity Level</p>
-              {activityOptions.map((option) => (
-                <button
-                  key={option.value}
-                  type="button"
-                  onClick={() => setForm((prev) => ({ ...prev, activityLevel: option.value }))}
-                  className={`min-h-14 rounded-xl border px-3 py-2 text-left transition ${choiceClasses(form.activityLevel === option.value)}`}
-                >
-                  <p className="text-sm font-semibold">{option.title}</p>
-                  <p className="mt-1 text-xs opacity-80">{option.description}</p>
-                </button>
-              ))}
-            </div>
-          )}
-
-          {step === 4 && (
             <div className="mt-5 grid gap-4">
               <div className="grid gap-2">
                 <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Goal</p>
@@ -350,13 +322,13 @@ export default function OnboardingFlow() {
               </div>
 
               <div className="grid gap-2">
-                <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Desired Pace</p>
-                {goalPaceOptions.map((option) => (
+                <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Strategy</p>
+                {goalStrategyOptions.map((option) => (
                   <button
                     key={option.value}
                     type="button"
-                    onClick={() => setForm((prev) => ({ ...prev, goalPace: option.value }))}
-                    className={`min-h-14 rounded-xl border px-3 py-2 text-left transition ${choiceClasses(form.goalPace === option.value)}`}
+                    onClick={() => setForm((prev) => ({ ...prev, goalStrategy: option.value }))}
+                    className={`min-h-14 rounded-xl border px-3 py-2 text-left transition ${choiceClasses(form.goalStrategy === option.value)}`}
                   >
                     <p className="text-sm font-semibold">{option.title}</p>
                     <p className="mt-1 text-xs opacity-80">{option.description}</p>
@@ -366,8 +338,8 @@ export default function OnboardingFlow() {
             </div>
           )}
 
-          {step === 5 && (
-            <div className="mt-5 grid gap-4">
+          {step === 4 && (
+            <div className="mt-5 grid gap-2">
               <button
                 type="button"
                 onClick={calculateIfNeeded}
@@ -381,13 +353,13 @@ export default function OnboardingFlow() {
                 <div className="rounded-2xl border border-sky-100 bg-sky-50/60 p-4">
                   <p className="text-xs font-semibold uppercase tracking-wide text-sky-700">Calculation result</p>
                   <p className="mt-2 text-sm text-zinc-700">
-                    Estimated maintenance calories: <span className="font-semibold text-zinc-900">{result.maintenanceCalories.toLocaleString()} cal/day</span>
+                    Base metabolic calories (BMR): <span className="font-semibold text-zinc-900">{result.estimatedBmr.toLocaleString()} cal/day</span>
                   </p>
                   <p className="mt-1 text-sm text-zinc-700">
-                    Recommended daily target: <span className="font-semibold text-zinc-900">{result.recommendedDailyCalories.toLocaleString()} cal/day</span>
+                    Goal adjustment: <span className="font-semibold text-zinc-900">{result.calorieAdjustment >= 0 ? "+" : ""}{result.calorieAdjustment.toLocaleString()} cal/day</span>
                   </p>
                   <p className="mt-1 text-sm text-zinc-700">
-                    Goal type: <span className="font-semibold text-zinc-900">{result.goalType}</span> ({result.goalPace})
+                    Daily target: <span className="font-semibold text-zinc-900">{result.recommendedDailyCalories.toLocaleString()} cal/day</span>
                   </p>
                   <p className="mt-3 text-xs text-zinc-600">{result.disclaimer}</p>
                 </div>

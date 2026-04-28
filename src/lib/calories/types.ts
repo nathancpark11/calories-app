@@ -20,11 +20,22 @@ export type DailySettings = {
   updatedAt: string;
 };
 
+export type ExerciseEntry = {
+  id: string;
+  userId: string;
+  description: string;
+  caloriesBurned: number;
+  entryDate: string;
+  createdAt: string;
+};
+
 export type TodayPayload = {
   dailyGoal: number;
   consumed: number;
+  burned: number;
   remaining: number;
   entries: CalorieEntry[];
+  exercises: ExerciseEntry[];
 };
 
 export type AIEstimateItem = {
@@ -86,7 +97,9 @@ export type CalendarDayPayload = {
   date: string;
   dailyGoal: number;
   consumed: number;
+  burned: number;
   remaining: number;
   status: CalendarStatus;
   entries: CalorieEntry[];
+  exercises: ExerciseEntry[];
 };
